@@ -1198,13 +1198,18 @@ def main():
         print("[ok] nativo: quitado")
         return 0
 
-    faltan = [b for b in BLOQUES if b[3] not in ficheros[b[0]][1]]
+    # la sonda ya puede estar con el parche de iOS en medio: no es un trozo contiguo
+    faltan = [b for b in BLOQUES if b[3] not in ficheros[b[0]][1]
+              and not (b[1].startswith("la sonda") and "PARCHE LOCAL - sonda de Vulkan" in ficheros[b[0]][1])]
     if not faltan:
         print(f"[ok] nativo: los {len(BLOQUES)} bloques ya estaban")
         return 0
     # Todos los anclajes antes de escribir nada.
     for ruta, nombre, ancla, _ in faltan:
         n = ficheros[ruta][1].count(ancla)
+        if n == 0:
+            print(f"[aviso] '{nombre}': sin anclaje en {ruta}; el arbol ya trae su version, se salta")
+            continue
         if n != 1:
             sys.exit(f"[ERROR] El anclaje de '{nombre}' aparece {n} veces en {ruta}, esperaba 1. "
                      f"No he tocado nada.")

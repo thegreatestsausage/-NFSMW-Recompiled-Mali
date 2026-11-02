@@ -255,9 +255,12 @@ final class MotorNativo {
         a.add("--nfsmw_cubemap_caras_max=" + ajustes.reflejosCoche());
         a.add("--nfsmw_reflejo_carretera=" + ajustes.reflejoAsfalto());
         a.add("--nfsmw_resplandor_cielo=" + ajustes.resplandorCielo());
-        // El volumen del juego, siempre el original: por encima de 100 su
-        // limitador lo comprime y los momentos fuertes se oyen aplastados.
-        a.add("--audio_ganancia_pct=100");
+        // El volumen de salida lo fija el cvar audio_ganancia_pct (60 en
+        // Android, 100 en escritorio): el juego mastereda los canales a tope y
+        // el plegado a estereo los suma, asi que con 100 el limitador vive
+        // pegado al techo y los momentos fuertes se oyen aplastados. No se pasa
+        // por aqui: un --audio_ganancia_pct=100 explicito machacaria el
+        // defecto del SDK.
         a.add("--nfsmw_audio_aaudio=" + ajustes.audioAAudio());
         // Su SDK viene con la vibracion apagada (a los mandos solo les llega cero):
         // con el ajuste, la del juego, en los mandos fisicos y, por la app, en el
@@ -275,7 +278,7 @@ final class MotorNativo {
         }
         // Los de la edicion de la ISO, que con varias en el APK puede no ser la principal.
         Ediciones.Edicion edicion = ajustes.edicion();
-        a.add("--user_language=" + edicion.idioma);
+        a.add("--user_language=" + ajustes.idiomaJuegoEfectivo());
         a.add("--user_country=" + edicion.pais);
         String gamertag = ajustes.gamertag();
         if (Ajustes.gamertagValido(gamertag) && !gamertag.isEmpty()) {

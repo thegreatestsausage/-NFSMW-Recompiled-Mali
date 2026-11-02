@@ -29,11 +29,17 @@ final class Ajustes {
     static final String PREFS = "ajustes";
 
     private final SharedPreferences p;
+    /** El escalon termico (GameActivity con debug.nfsmw.thermosteps=1): su
+     * propio fichero, porque lo escribe el proceso del juego (":juego") y este
+     * solo lo lee al montar los argumentos. Un fichero que este proceso no
+     * tenga aun en memoria es lo unico que lee fresco de disco. */
+    private final SharedPreferences termico;
     /** El movil declara Vulkan 1.1 por hardware (lo que pedia el manifiesto). */
     private final boolean conVulkan;
 
     Ajustes(Context ctx) {
         p = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        termico = ctx.getSharedPreferences("termico", Context.MODE_PRIVATE);
         conVulkan = ctx.getPackageManager().hasSystemFeature(
                 android.content.pm.PackageManager.FEATURE_VULKAN_HARDWARE_VERSION, 0x401000);
     }
@@ -120,6 +126,14 @@ final class Ajustes {
 
     /** La edicion con la que se juega la ISO elegida (ver Ediciones). */
     Ediciones.Edicion edicion() { return Ediciones.paraJugar(xexIso()); }
+
+    /** Idiomas de Xbox 360 (XLanguage) que se pueden forzar; 0 = el de la edicion. */
+    static final int[] IDIOMAS_JUEGO = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12};
+
+    /** El idioma del juego (voces y textos): el elegido, o el de la edicion. */
+    int idiomaJuego() { return p.getInt("idioma_juego", 0); }
+    void idiomaJuego(int v) { p.edit().putInt("idioma_juego", v).apply(); }
+    int idiomaJuegoEfectivo() { int v = idiomaJuego(); return v != 0 ? v : edicion().idioma; }
 
     /** Nombre del driver importado, o null para el del sistema. */
     String driver() { return p.getString("driver", null); }
@@ -482,7 +496,16 @@ final class Ajustes {
      * FPS_SIN_LIMITE: el vblank a 240 Hz, el maximo del SDK (parche_nativo.py).
      */
     static final int FPS_SIN_LIMITE = 0;
-    int limiteFps() { return p.getInt("limite_fps", 60); }
+    int limiteFps() {
+        // El escalon termico (debug.nfsmw.thermosteps) manda mientras dure: lo
+        // apunta GameActivity y se borra solo cuando el movil se despeja. La
+        // clave del usuario ("limite_fps") no se toca nunca.
+        int escalon = termico.getInt("thermo_limite_fps", 0);
+        if (escalon > 0) {
+            return escalon;
+        }
+        return p.getInt("limite_fps", 30);
+    }
     void limiteFps(int v) { p.edit().putInt("limite_fps", v).apply(); }
 
     // --- Motor nativo: sus ajustes de graficos y sonido. Los valores por
@@ -798,7 +821,7 @@ final class Ajustes {
         // El idioma y el pais de la consola, los de la edicion del juego con la
         // que se compilo el APK (PAL Espana: 5 y 31; USA: 1 y 103). Salen de
         // app/generated-android/edicion.json, via build.gradle.kts (Ediciones).
-        a.add("--user_language=" + edicion().idioma);
+        a.add("--user_language=" + idiomaJuegoEfectivo());
         a.add("--user_country=" + edicion().pais);
         // Un solo argumento aunque lleve espacios: va en el array, sin shell.
         String gamertag = gamertag();

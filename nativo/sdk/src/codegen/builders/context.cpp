@@ -329,9 +329,34 @@ void BuilderContext::emit_call_sharing_registers(const std::string& call, bool c
 void BuilderContext::emit_conditional_branch(bool not_, std::string_view cond) {
   uint32_t target = insn.operands[1];
 
+  // A branch whose target is inside the function being emitted is a local goto.
+  // classifyTarget resolves the caller through getFunctionContaining(site), which
+  // picks the node with the largest base <= site; with overlapping function nodes
+  // (e.g. an overrides-declared entry carved inside a real function body) that can
+  // be a different node than the one being emitted, and the target below its base
+  // classifies as Unknown even though it is local to `fn`. Check block coverage,
+  // not the linear range: emitCpp prints a loc_ label only at addresses it walks
+  // inside blocks, so a goto is only safe when a block contains the target.
+  auto targetInCurrentFunction = [&]() {
+    for (const auto& block : fn.blocks())
+      if (block.contains(target))
+        return true;
+    return false;
+  };
+
   // Use classifyTarget for consistent branch classification
   // false = branch instruction (not a call), so own-base means loop back
   auto kind = graph().classifyTarget(target, base, false);
+
+  if (kind == TargetKind::Unknown && targetInCurrentFunction()) {
+    REXCODEGEN_WARN(
+        "Conditional branch to 0x{:08X} from 0x{:08X} left unclassified by the graph; "
+        "emitting local goto (target inside current function 0x{:08X})",
+        target, base, fn.base());
+    println("\tif ({}{}.{}) goto loc_{:08X};", not_ ? "!" : "", cr(insn.operands[0]), cond,
+            target);
+    return;
+  }
 
   switch (kind) {
     case TargetKind::InternalLabel:
@@ -367,17 +392,38 @@ void BuilderContext::emit_conditional_branch(bool not_, std::string_view cond) {
           println("\t}}");
         }
       } else {
-        REXCODEGEN_ERROR("Unresolved conditional branch to 0x{:08X} from 0x{:08X} (no CallTarget)",
-                         target, base);
-        println("\tif ({}{}.{}) REX_FATAL(\"Unresolved branch from 0x{:08X} to 0x{:08X}\");",
-                not_ ? "!" : "", cr(insn.operands[0]), cond, base, target);
+        // No call edge at this site: the graph resolved this branch as an
+        // internal label (tryResolveAsInternalLabel wins over the function entry
+        // in tryResolveFunction), so the "Function" classification from
+        // isEntryPoint is stale for a conditional branch. Emit the local goto.
+        if (targetInCurrentFunction()) {
+          REXCODEGEN_WARN(
+              "Conditional branch to 0x{:08X} from 0x{:08X} classified as function/import "
+              "with no call edge; emitting local goto (target inside current function "
+              "0x{:08X})",
+              target, base, fn.base());
+          println("\tif ({}{}.{}) goto loc_{:08X};", not_ ? "!" : "", cr(insn.operands[0]), cond,
+                  target);
+        } else {
+          REXCODEGEN_ERROR("Unresolved conditional branch to 0x{:08X} from 0x{:08X} (no CallTarget)",
+                           target, base);
+          // Runtime fallback instead of a fatal: the helper tail-calls the target
+          // when it is registered in the dispatcher, otherwise execution falls
+          // through past the branch (load-time survey logs the real pairs).
+          println("\tif ({}{}.{}) rex::runtime::rexglue_branch_unresolved(ctx, 0x{:08X}u, "
+                  "0x{:08X}u);",
+                  not_ ? "!" : "", cr(insn.operands[0]), cond, base, target);
+        }
       }
       break;
 
     case TargetKind::Unknown:
       REXCODEGEN_ERROR("Unresolved conditional branch to 0x{:08X} from 0x{:08X}", target, base);
       println("\t// ERROR: conditional branch to unknown address 0x{:08X}", target);
-      println("\tif ({}{}.{}) REX_FATAL(\"Unresolved branch from 0x{:08X} to 0x{:08X}\");",
+      // Runtime fallback instead of a fatal: the helper tail-calls the target
+      // when it is registered in the dispatcher, otherwise execution falls
+      // through past the branch (load-time survey logs the real pairs).
+      println("\tif ({}{}.{}) rex::runtime::rexglue_branch_unresolved(ctx, 0x{:08X}u, 0x{:08X}u);",
               not_ ? "!" : "", cr(insn.operands[0]), cond, base, target);
       break;
   }

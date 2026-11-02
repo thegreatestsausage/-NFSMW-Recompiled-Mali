@@ -156,6 +156,9 @@ int EjecutarJuego(int argc, char* argv[]) {
   app->SetParsedArguments(std::move(opciones));
 
   const bool iniciada = app->OnInitialize();
+  if (!iniciada) {
+    ALOGE("OnInitialize ha devuelto false: la app no arranca (mira el log del SDK)");
+  }
 
   // Hilos fijados a nucleos (afinidad.cpp), si el cvar thread_affinity lo pide.
   // DESPUES de OnInitialize: hasta ahi el log no escribe en el fichero (con

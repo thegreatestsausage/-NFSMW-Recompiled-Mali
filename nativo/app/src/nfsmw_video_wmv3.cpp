@@ -333,7 +333,7 @@ struct AudioWmaPro::Estado {
 
   // 5.1 to stereo, at the movie's own rate (SDL resamples to the device). Same weights as the game's fold on
   // Android (front 1, centre and surround 0.707, LFE 0.5). Limit the unclipped stereo sum at the source rate.
-  float limitador = 1.0f;
+  rex::audio::Limitador limitador;
 
   void ConvertirYEnviar(const AVFrame* f) {
     if (f->nb_samples <= 0 || !f->extended_data || !f->extended_data[0]) return;
@@ -383,8 +383,8 @@ struct AudioWmaPro::Estado {
       pcm[size_t(i) * 2] = izq;
       pcm[size_t(i) * 2 + 1] = der;
     }
-    rex::audio::LimitOutput(pcm.data(), size_t(cantidad), 2,
-                           f->sample_rate > 0 ? f->sample_rate : c.frecuencia_audio, limitador);
+    limitador.Procesar(pcm.data(), size_t(cantidad), 2,
+                       f->sample_rate > 0 ? f->sample_rate : c.frecuencia_audio);
     // Keep a short lead-in (250 ms) so decoding runs ahead without buffering the whole movie, and only while the
     // game is still showing it.
     if (EsperarTurno() && SDL_PutAudioStreamData(salida, pcm.data(), int(pcm.size() * sizeof(float)))) {

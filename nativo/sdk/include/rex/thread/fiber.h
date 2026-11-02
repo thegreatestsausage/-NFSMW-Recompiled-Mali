@@ -19,6 +19,10 @@
 #if REX_PLATFORM_SWITCH || (REX_PLATFORM_ANDROID && REX_ARCH_ARM64)
 #include <cstdint>
 #include <vector>
+#elif REX_PLATFORM_ANDROID
+// mw4droid: x86_64 SysV backend (emulador, sin Berberis).
+#include <cstdint>
+#include <vector>
 #elif REX_PLATFORM_LINUX || REX_PLATFORM_MAC
 #if REX_PLATFORM_MAC && !defined(_XOPEN_SOURCE)
 // Darwin hides the deprecated ucontext APIs unless _XOPEN_SOURCE is defined
@@ -30,8 +34,8 @@
 #include <vector>
 #endif
 
-#if REX_PLATFORM_SWITCH || (REX_PLATFORM_ANDROID && REX_ARCH_ARM64)
-/// First C++ code that runs on a new AAPCS64 fiber. It is called by the
+#if REX_PLATFORM_SWITCH || REX_PLATFORM_ANDROID
+/// First C++ code that runs on a new fiber (AAPCS64 or x86_64 SysV). It is called by the
 /// assembly trampoline in fiber_switch.cpp, and never returns.
 extern "C" [[noreturn]] void rex_fiber_trampoline(void);
 #endif
@@ -81,6 +85,26 @@ struct Fiber {
     uint64_t lr;   // x30, where ret jumps to
     uint64_t sp;
     uint64_t d8, d9, d10, d11, d12, d13, d14, d15;  // only the low 64 bits
+  };
+
+ private:
+  Context context_{};
+  std::vector<uint8_t> stack_;
+  void (*entry_)(void*) = nullptr;
+  void* arg_ = nullptr;
+  bool is_thread_fiber_ = false;
+
+  friend void ::rex_fiber_trampoline(void);
+#elif REX_PLATFORM_ANDROID
+  // mw4droid: x86_64 SysV. Callee-saved: rbx, rbp, r12-r15, rsp y xmm6-xmm15.
+  // rip guarda la direccion de reanudacion (el campo lr del backend arm64).
+ public:
+  struct Context {
+    uint64_t rbx, rbp, r12, r13, r14, r15;
+    uint64_t rsp;
+    uint64_t rip;
+    uint64_t xmm6[2], xmm7[2], xmm8[2], xmm9[2], xmm10[2];
+    uint64_t xmm11[2], xmm12[2], xmm13[2], xmm14[2], xmm15[2];
   };
 
  private:

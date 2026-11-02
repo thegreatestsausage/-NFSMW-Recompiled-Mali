@@ -1111,8 +1111,26 @@ public class SetupActivity extends AppCompatActivity {
                             Idioma.elegir(this, codigo);
                             recreate();
                         }
-                    })
+                    }),
+            desplegable(R.string.idioma_juego, R.string.idioma_juego_resumen, nombresIdiomasJuego(),
+                    listaInts(Ajustes.IDIOMAS_JUEGO), ajustes.idiomaJuego(), ajustes::idiomaJuego)
         );
+    }
+
+    private static List<Integer> listaInts(int[] v) {
+        List<Integer> l = new ArrayList<>();
+        for (int i : v) l.add(i);
+        return l;
+    }
+
+    private List<String> nombresIdiomasJuego() {
+        int[] ids = {R.string.idioma_juego_edicion, R.string.idioma_en, R.string.idioma_ja,
+                R.string.idioma_de, R.string.idioma_fr, R.string.idioma_es, R.string.idioma_it,
+                R.string.idioma_ko, R.string.idioma_zh_tw, R.string.idioma_pt,
+                R.string.idioma_zh_cn, R.string.idioma_pl, R.string.idioma_ru};
+        List<String> n = new ArrayList<>();
+        for (int id : ids) n.add(getString(id));
+        return n;
     }
 
     /** Sonido (motor nativo: por donde sale el audio). */

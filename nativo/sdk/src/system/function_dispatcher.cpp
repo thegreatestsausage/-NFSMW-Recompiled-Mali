@@ -23,6 +23,9 @@
 #include <rex/system/function_dispatcher.h>
 #include <rex/system/thread_state.h>
 
+#include <mutex>
+#include <unordered_set>
+
 namespace rex::runtime {
 
 namespace {
@@ -50,6 +53,36 @@ PPCFunc* ResolveIndirectFunction(uint32_t guest_address) {
   }
 
   return &InvalidFunctionTrap;
+}
+
+void rexglue_branch_unresolved(PPCContext& ctx, uint32_t from, uint32_t to) {
+  // Survey of branch edges the static codegen could not resolve (e.g. backward
+  // edges into other generated functions). Each distinct pair is logged once
+  // per process so the real pairs can drive follow-up declaration fixes.
+  static std::mutex survey_mutex;
+  static std::unordered_set<uint64_t> surveyed_pairs;
+
+  FunctionDispatcher* dispatcher = GetBoundFunctionDispatcher();
+  PPCFunc* target = dispatcher ? dispatcher->GetFunction(to) : nullptr;
+
+  const uint64_t pair = (static_cast<uint64_t>(from) << 32) | to;
+  {
+    std::lock_guard<std::mutex> lock(survey_mutex);
+    if (surveyed_pairs.insert(pair).second) {
+      REXLOG_WARN("rexglue_branch_unresolved: 0x{:08X} -> 0x{:08X} ({})", from, to,
+                  target ? "target registered, dispatching"
+                         : "target not registered, falling through");
+    }
+  }
+
+  if (target) {
+    // Tail-call: a branch to a function entry leaves this function's LR
+    // intact, so the target returns straight to this function's caller.
+    return target(ctx, dispatcher->memory()->virtual_membase());
+  }
+
+  // Target not registered: skip the branch; execution resumes at the
+  // instruction after the branch site. Deliberate load-time fallback.
 }
 
 FunctionDispatcher::FunctionDispatcher(rex::memory::Memory* memory, ExportResolver* export_resolver)

@@ -31,6 +31,12 @@
 
 #include "nfsmw_nativo_sistema.h"
 
+#if REX_PLATFORM_ANDROID
+// PARCHE LOCAL (NFSMW Recompiled): la define la app de Android (nativo_android.cpp).
+// Espera mientras la app esta en segundo plano.
+extern "C" void NfsmwAndroidPausaEnSwap() __attribute__((weak));
+#endif
+
 #if REX_PLATFORM_ANDROID || REX_PLATFORM_IOS
 // PARCHE LOCAL (NFSMW Recompiled): la define la app de Android (nativo_android.cpp), que
 // iOS tambien compila. Espera mientras la app esta en segundo plano o con el editor del

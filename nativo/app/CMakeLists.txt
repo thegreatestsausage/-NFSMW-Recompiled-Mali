@@ -99,6 +99,9 @@ set(NFSMW_SOURCES
     # over the list that calls it (sub_82454B50) in native code, identical, keeping the game's cache hints
     # (dcbt), and checked at run time against a literal copy of the original (cvar nfsmw_pegamento_nativo).
     src/nfsmw_pegamento_nativo.cpp
+    # mw4droid: stubs de sondeo para los simbolos que el descubrimiento no
+    # crea en las ediciones sin PAL Espana (destinos de llamada indirecta).
+    src/mw_stubs_sondeo.cpp
     # PNG captures of the game image for testing (cvar
     # nfsmw_captura_cada_s, 0 = never).
     src/nfsmw_nativo_captura.cpp

@@ -338,7 +338,13 @@ add_subdirectory(sdl3)
 # file_redirect_hook, gsl_alloc_hook, hook_impl) que el APK tiene que llevar en
 # nativeLibraryDir.
 #=============================================================================
-if(ANDROID AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libadrenotools/CMakeLists.txt")
+# mw4droid: adrenotools es arm64-only (los hooks parchean drivers arm64);
+# en x86_64 se salta para no chocar con el add_subdirectory del otro SDK.
+# mw4droid: en el arbol habia DOS add_subdirectory(libadrenotools) (este, sin
+# filtro de ABI, y otro arm64-only a continuacion); el segundo hace fallar la
+# configuracion con "binary directory is already used". Se deja solo el de
+# arm64-v8a.
+if(ANDROID AND ANDROID_ABI STREQUAL "arm64-v8a" AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libadrenotools/CMakeLists.txt")
     add_subdirectory(libadrenotools)
 endif()
 endif()  # NOT REXGLUE_PLATFORM_SWITCH

@@ -31,6 +31,12 @@ REXCVAR_DEFINE_STRING(hid_mappings_file, "gamecontrollerdb.txt", "Input",
 extern "C" void NfsmwAndroidVibrar(uint16_t izquierdo, uint16_t derecho) __attribute__((weak));
 #endif
 
+#if REX_PLATFORM_ANDROID
+// PARCHE LOCAL (NFSMW Recompiled): la define la app de Android (nativo_android.cpp) y
+// hace vibrar el movil con lo que el juego le pide al mando tactil (0-65535 cada motor).
+extern "C" void NfsmwAndroidVibrar(uint16_t izquierdo, uint16_t derecho) __attribute__((weak));
+#endif
+
 namespace rex::input::sdl {
 
 namespace {

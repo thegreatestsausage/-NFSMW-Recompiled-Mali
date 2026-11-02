@@ -18,6 +18,11 @@
 #include <thread>
 #include <vector>
 
+#if defined(__ANDROID__)
+#include <android/log.h>
+#include <sys/system_properties.h>
+#endif
+
 #include <rex/assert.h>
 #include <rex/audio/conversion.h>
 #include <rex/audio/downmix.h>
@@ -30,13 +35,25 @@
 #include <rex/logging.h>
 #include <rex/perf/counter.h>
 #include <rex/platform.h>
+#include <rex/platform/env.h>
 #include <SDL3/SDL.h>
 
 REXCVAR_DEFINE_BOOL(audio_mute, false, "Audio", "Mute audio output");
+#if REX_PLATFORM_ANDROID
+// El juego mastereda sus canales 5.1 a tope y el plegado a estereo suma hasta
+// ~2.4 sobre el contenido crudo: con 100 el limitador vive pegado al techo
+// (sonido "recocido"). 60 deja el techo del limitador solo para los picos
+// peores en el telefono; el volumen fino queda para los sliders del juego.
+REXCVAR_DEFINE_INT32(audio_ganancia_pct, 60, "Audio",
+                     "Volumen general de la salida en porcentaje (100 = sin cambio). Por encima de 100 puede "
+                     "saturar en los momentos mas fuertes")
+    .range(25, 300);
+#else
 REXCVAR_DEFINE_INT32(audio_ganancia_pct, 100, "Audio",
                      "Volumen general de la salida en porcentaje (100 = sin cambio). Por encima de 100 puede "
                      "saturar en los momentos mas fuertes")
     .range(25, 300);
+#endif
 REXCVAR_DEFINE_INT32(audio_sdl_rafaga_tramas, 0, "Audio",
                      "Diagnostico: el driver SDL saca las tramas del juego de N en N, con N "
                      "liberaciones seguidas, como el driver de la Switch con buferes de 4 tramas; "
@@ -52,6 +69,10 @@ REXCVAR_DEFINE_INT32(audio_volcado_salida_s, 0, "Audio",
                      "silencios por falta de tramas) que se guardan en audio_salida.wav; 0 = nada");
 REXCVAR_DEFINE_INT32(audio_volcado_salida_desde_s, 0, "Audio",
                      "Diagnostico: segundos de salida SDL que se saltan antes del volcado");
+REXCVAR_DEFINE_BOOL(audio_estadisticas, false, "Audio",
+                    "Diagnostico: cada 5 s, en el log, el pico y las muestras recortadas (|x| >= "
+                    "1.0) del audio ya plegado ANTES del limitador. Tambien se activa con el "
+                    "entorno REXGLUE_AUDIOSTATS (en el telefono: setprop debug.nfsmw.audio 1)");
 
 namespace rex::audio::sdl {
 
@@ -122,6 +143,56 @@ void ContarTrama(bool silencio) {
   tramas_con_datos = 0;
   tramas_de_silencio = 0;
   ultimo_informe_salida = ahora;
+}
+
+// Nivel de la salida: pico y muestras recortadas del plegado ANTES del
+// limitador. Es lo que dice si el juego o el pliegue entregan un nivel que no
+// cabe, sin confundirlo con lo que el limitador acomoda despues. Se activa con
+// el cvar audio_estadisticas o con el entorno REXGLUE_AUDIOSTATS (en el
+// telefono: setprop debug.nfsmw.audio 1). Informe cada ~5 s de audio.
+struct EstadisticasSalida {
+  uint64_t muestras = 0;
+  uint64_t recortadas = 0;
+  float pico = 0.0f;
+};
+EstadisticasSalida estadisticas_salida;
+
+void MedirSalida(const float* datos, size_t muestras) {
+  // El prop se lee en vivo: el informe no depende de que el env llegue al
+  // proceso ni de a donde apunte --log_file.
+  bool por_prop = false;
+#if defined(__ANDROID__)
+  char valor_prop[PROP_VALUE_MAX] = {0};
+  if (__system_property_get("debug.nfsmw.audio", valor_prop) > 0 && valor_prop[0] != '\0' &&
+      valor_prop[0] != '0') {
+    por_prop = true;
+  }
+#endif
+  if (!REXCVAR_GET(audio_estadisticas) && !rex::platform::env::get("REXGLUE_AUDIOSTATS") &&
+      !por_prop) {
+    return;
+  }
+  for (size_t i = 0; i < muestras; ++i) {
+    const float v = std::fabs(datos[i]);
+    if (v > estadisticas_salida.pico) estadisticas_salida.pico = v;
+    if (v >= 1.0f) ++estadisticas_salida.recortadas;
+  }
+  estadisticas_salida.muestras += muestras;
+  if (estadisticas_salida.muestras < uint64_t(48000) * 2 * 5) {
+    return;
+  }
+  REXAPU_INFO("[audio] peak={:.4f} clip={}/{}", estadisticas_salida.pico,
+              estadisticas_salida.recortadas, estadisticas_salida.muestras);
+#if defined(__ANDROID__)
+  // Duplicado en logcat: el log del SDK va a --log_file (en release del
+  // lanzador, /dev/null), y desde logcat se lee en cualquier lanzamiento.
+  __android_log_print(ANDROID_LOG_INFO, "NFSMW-rex", "[audio] peak=%.4f clip=%zu/%zu",
+                      estadisticas_salida.pico, estadisticas_salida.recortadas,
+                      estadisticas_salida.muestras);
+#endif
+  estadisticas_salida.pico = 0.0f;
+  estadisticas_salida.recortadas = 0;
+  estadisticas_salida.muestras = 0;
 }
 
 }  // namespace
@@ -374,9 +445,10 @@ void SDLAudioDriver::SDLCallback(void* userdata, SDL_AudioStream* stream, int ad
             conversion::sequential_6_BE_to_interleaved_6_LE(driver->rafaga_.data() + inicio, buffer,
                                                             channel_samples_, mix, gain);
           }
+          MedirSalida(driver->rafaga_.data() + inicio, size_t(sample_count));
 #if REX_PLATFORM_ANDROID
-          LimitOutput(driver->rafaga_.data() + inicio, channel_samples_, driver->sdl_device_channels_,
-                      frame_frequency_, driver->limitador_ganancia_);
+          driver->limitador_.Procesar(driver->rafaga_.data() + inicio, channel_samples_,
+                                      driver->sdl_device_channels_, frame_frequency_);
 #endif
           driver->frames_unused_.push(buffer);
           if (!driver->bomba_activa_.load(std::memory_order_relaxed)) {
@@ -450,9 +522,10 @@ void SDLAudioDriver::SDLCallback(void* userdata, SDL_AudioStream* stream, int ad
             assert_unhandled_case(driver->sdl_device_channels_);
             break;
         }
+        MedirSalida(data, size_t(sample_count));
 #if REX_PLATFORM_ANDROID
-        LimitOutput(data, channel_samples_, driver->sdl_device_channels_, frame_frequency_,
-                    driver->limitador_ganancia_);
+        driver->limitador_.Procesar(data, channel_samples_, driver->sdl_device_channels_,
+                                    frame_frequency_);
 #endif
       }
       if (!SDL_PutAudioStreamData(stream, data, len)) {

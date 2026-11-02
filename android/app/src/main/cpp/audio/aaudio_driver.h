@@ -2,6 +2,7 @@
 
 #include <rex/audio/audio_driver.h>
 #include <rex/audio/audio_system.h>
+#include <rex/audio/output_limiter.h>
 #include <rex/thread.h>
 #include <aaudio/AAudio.h>
 
@@ -75,9 +76,14 @@ class AndroidAAudioDriver final : public AudioDriver {
   std::mutex control_;
 
 #if NFSMW_MOTOR_NATIVO
-  // Motor nativo: estado del limitador de su SDK (rex/audio/output_limiter.h).
-  // Solo lo toca el productor (SubmitFrame).
-  float limitador_ganancia_ = 1.0f;
+  // Motor nativo: limitador de su SDK (rex/audio/output_limiter.h), con
+  // lookahead y estado propio. Solo lo toca el productor (SubmitFrame).
+  rex::audio::Limitador limitador_;
+  // Deteccion de bloque repetido: cuando el mezclador del juego se para, el
+  // mismo bloque de 5,3 ms vuelve a llegar bit por bit igual. Repetirlo suena
+  // a disco rayado; lo correcto es silencio hasta que el huesped avance.
+  float bloque_previo_[kFloatsPorBloque] = {};
+  bool hay_previo_ = false;
   bool sdl_audio_iniciado_ = false;
 #endif
 };

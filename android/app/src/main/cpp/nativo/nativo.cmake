@@ -65,6 +65,11 @@ add_subdirectory("${NFSMW_NATIVO}/${NFSMW_NATIVO_APP}" nfsmw-app)
 
 target_sources(nfsmw PRIVATE
     "${CMAKE_CURRENT_LIST_DIR}/nativo_android.cpp"
+    # mw4droid: diagnostico SIGFPE (division por cero en nativo).
+    "${CMAKE_CURRENT_LIST_DIR}/mw_sigfpe.cpp"
+    # Experimento ADPF (cvar nfsmw_adpf, false por defecto): sesion de
+    # PerformanceHint para 'Main XThread' y 'GPU anillo'. Apagado no crea nada.
+    "${CMAKE_CURRENT_LIST_DIR}/mw_adpf.cpp"
     # Los mismos que con el motor de Xenos: la sonda de Vulkan y los hilos
     # fijados a nucleos. Su android_rendimiento.cpp no entra: nativo_android.cpp
     # pone en su sitio nuestro vigilante de afinidad.

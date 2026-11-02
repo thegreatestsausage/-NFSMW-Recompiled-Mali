@@ -10,6 +10,7 @@
  */
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <utility>
 
@@ -27,6 +28,7 @@
 #include <rex/stream.h>
 #include <rex/system/function_dispatcher.h>
 #include <rex/system/mmio_handler.h>
+#include <rex/system/thread_state.h>
 #include <rex/system/xmemory.h>
 #include <rex/thread.h>
 
@@ -555,6 +557,17 @@ runtime::MMIORange* Memory::LookupVirtualMappedRange(uint32_t virtual_address) {
   return mmio_handler_->LookupRange(virtual_address);
 }
 
+// D2: volcado de contexto en violaciones de acceso de invitado no manejadas.
+// Se activa solo con la variable de entorno REXGLUE_AVDUMP=1 (cacheada en un
+// static); por defecto el comportamiento no cambia.
+static bool AvDumpHabilitado() {
+  static const bool habilitado = [] {
+    const char* valor = std::getenv("REXGLUE_AVDUMP");
+    return valor && *valor && std::strcmp(valor, "0") != 0;
+  }();
+  return habilitado;
+}
+
 bool Memory::AccessViolationCallback(std::unique_lock<std::recursive_mutex> global_lock_locked_once,
                                      void* host_address, bool is_write) {
   // Access via physical_membase_ is special, when need to bypass everything
@@ -567,10 +580,102 @@ bool Memory::AccessViolationCallback(std::unique_lock<std::recursive_mutex> glob
   uint32_t virtual_address = HostToGuestVirtual(host_address);
   BaseHeap* heap = LookupHeap(virtual_address);
   if (!heap || heap->heap_type() != memory::HeapType::kGuestPhysical) {
-    REXSYS_ERROR(
-        "Unhandled guest access violation: {} of guest 0x{:08X} (host 0x{:016X}) on thread 0x{:X}",
-        is_write ? "write" : "read", virtual_address, reinterpret_cast<uintptr_t>(host_address),
-        rex::thread::current_thread_id());
+    // D1: los stacks de los hilos invitados viven en 0x70000000-0x7F000000,
+    // dentro de la pila virtual 0x40000000 (heap kGuestVirtual), y este
+    // callback solo atiende fallos en heaps fisicas (write-watch de la GPU):
+    // cualquier fallo en un heap virtual llega aqui y antes se reportaba como
+    // "Unhandled" sin contexto. Toda la arena huesped esta mapeada
+    // lectura/escritura de antemano (MapViews) y las paginas libres de este
+    // heap no se reprotegen (SyncHostPageAccess no hace nada con paginas de
+    // 64 KB), asi que un fallo dentro del rango de stacks solo puede ser una
+    // pagina de guarda: las que XThread::AllocateStack pone a ambos lados de
+    // cada stack con NoAccess. Es decir, desbordamiento del stack invitado
+    // (por debajo de stack_limit) o un puntero perdido sobre la guarda
+    // superior de otro stack.
+    // Debe coincidir con XThread::kStackAddressRangeBegin/End (xthread.h).
+    constexpr uint32_t kGuestStackRangeBegin = 0x70000000;
+    constexpr uint32_t kGuestStackRangeEnd = 0x7F000000;
+    if (heap && heap->heap_type() == memory::HeapType::kGuestVirtual &&
+        virtual_address >= kGuestStackRangeBegin && virtual_address < kGuestStackRangeEnd) {
+      uint32_t page_protect = 0;
+      heap->QueryProtect(virtual_address, &page_protect);
+      REXSYS_ERROR(
+          "Guest stack access violation: {} of guest 0x{:08X} (host 0x{:016X}) on thread 0x{:X}, "
+          "guest page protect 0x{:08X} ({}) - the fault landed on a thread stack guard page: "
+          "probable guest stack overflow (below stack_limit) or a stale pointer into another "
+          "thread's stack guard; stack pages are committed up front, nothing is lazily mapped",
+          is_write ? "write" : "read", virtual_address, reinterpret_cast<uintptr_t>(host_address),
+          rex::thread::current_thread_id(), page_protect,
+          page_protect == memory::kMemoryProtectNoAccess ? "NoAccess guard page" : "other");
+      // mw4droid: трассировка гостовой цепочки кадров (back chain): [r1] =
+      // r1 вызывающего, [r1+4] = адрес возврата. Показывает, чей кадр читает
+      // guard и где рекурсия/порча.
+      if (AvDumpHabilitado()) {
+        auto* hilo = rex::runtime::ThreadState::Get();
+        if (hilo && hilo->context()) {
+          uint32_t r1 = hilo->context()->r1.u32;
+          uint8_t* guest_base = reinterpret_cast<uint8_t*>(host_address) - virtual_address;
+          REXSYS_ERROR("[sondeo-stk] pila invitada desde r1 0x{:08X}:", r1);
+          for (int i = 0; i < 24 && r1 >= kGuestStackRangeBegin && r1 < kGuestStackRangeEnd; ++i) {
+            uint32_t back = *reinterpret_cast<uint32_t*>(guest_base + r1);
+            uint32_t lr = *reinterpret_cast<uint32_t*>(guest_base + r1 + 4);
+            REXSYS_ERROR("[sondeo-stk] {:2d}: r1 0x{:08X} lr 0x{:08X}", i, r1, lr);
+            if (back <= r1) {
+              REXSYS_ERROR("[sondeo-stk] cadena rota en el cuadro {}", i);
+              break;
+            }
+            r1 = back;
+          }
+        }
+      }
+    } else {
+      REXSYS_ERROR(
+          "Unhandled guest access violation: {} of guest 0x{:08X} (host 0x{:016X}) on thread 0x{:X}",
+          is_write ? "write" : "read", virtual_address, reinterpret_cast<uintptr_t>(host_address),
+          rex::thread::current_thread_id());
+      // mw4droid: трассировка гостовой цепочки кадров и здесь (near-NULL и
+      // прочие не-stack нарушения — тот же формат back chain).
+      if (AvDumpHabilitado()) {
+        auto* hilo = rex::runtime::ThreadState::Get();
+        if (hilo && hilo->context()) {
+          uint32_t r1 = hilo->context()->r1.u32;
+          uint8_t* guest_base = reinterpret_cast<uint8_t*>(host_address) - virtual_address;
+          REXSYS_ERROR("[sondeo-stk] pila invitada desde r1 0x{:08X}:", r1);
+          for (int i = 0; i < 24 && r1 >= kGuestStackRangeBegin && r1 < kGuestStackRangeEnd; ++i) {
+            uint32_t back = *reinterpret_cast<uint32_t*>(guest_base + r1);
+            uint32_t lr = *reinterpret_cast<uint32_t*>(guest_base + r1 + 4);
+            REXSYS_ERROR("[sondeo-stk] {:2d}: r1 0x{:08X} lr 0x{:08X}", i, r1, lr);
+            if (back <= r1) {
+              REXSYS_ERROR("[sondeo-stk] cadena rota en el cuadro {}", i);
+              break;
+            }
+            r1 = back;
+          }
+        }
+      }
+    }
+    if (AvDumpHabilitado()) {
+      // D2: contexto del hilo invitado para poder identificar la función
+      // recompilada. El código recompilado no mantiene un PC de invitado
+      // continuo; el mejor sustituto es last_indirect_target (último destino
+      // de una llamada indirecta). El RIP del anfitrión se imprime junto a
+      // este bloque desde MMIOHandler::ExceptionCallback (mmio_handler.cpp),
+      // único punto donde el arch::Exception con el contexto del host está
+      // disponible.
+      auto* thread_state = rex::runtime::ThreadState::Get();
+      if (thread_state && thread_state->context()) {
+        const auto& guest_ctx = *thread_state->context();
+        REXSYS_ERROR(
+            "AVDUMP guest ctx: guest_thread_id {:08X}, r1(stack) 0x{:08X}, lr 0x{:08X}, "
+            "last_indirect_target 0x{:08X}",
+            thread_state->thread_id(), static_cast<uint32_t>(guest_ctx.r1.u64),
+            static_cast<uint32_t>(guest_ctx.lr), guest_ctx.last_indirect_target);
+      } else {
+        REXSYS_ERROR(
+            "AVDUMP guest ctx: sin ThreadState ligado a este hilo del host "
+            "(hilo solo-host, contexto de invitado no disponible)");
+      }
+    }
     return false;
   }
 

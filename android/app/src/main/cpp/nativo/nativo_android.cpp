@@ -60,6 +60,7 @@
 #if defined(__ANDROID__)
 #include "../afinidad.h"
 #include "../audio/aaudio_driver.h"
+#include "mw_adpf.h"
 
 REXCVAR_DEFINE_BOOL(nfsmw_audio_aaudio, true, "Audio",
                     "Android: sacar el sonido por AAudio (el driver de NFSMW Recompiled) en vez de por "
@@ -446,6 +447,10 @@ extern "C" void nfsmw_android_nucleos_grandes_aplicar() {
     g_vigilante = nfsmw::afinidad::Arrancar();
   }
   NfsmwVigilarSegundoPlano();
+  // El experimento ADPF (mw_adpf.cpp), apagado por defecto. Aqui todavia no
+  // existen los hilos del juego: el hilo del modulo los espera y los busca
+  // cada segundo.
+  NfsmwAdpfArrancar();
 }
 
 // ---------------------------------------------------------------------------

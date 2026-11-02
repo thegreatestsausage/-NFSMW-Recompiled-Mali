@@ -31,6 +31,15 @@ using PPCFunc = void(PPCContext& ctx, uint8_t* base);
 
 namespace rex::runtime {
 PPCFunc* ResolveIndirectFunction(uint32_t guest_address);
+
+/**
+ * Runtime fallback for branch edges the static codegen could not resolve
+ * (emitted in place of a hard fatal). If `to` is registered in the function
+ * dispatcher, it is tail-called; otherwise the helper returns and execution
+ * continues at the instruction after the branch site. Each distinct
+ * (from, to) pair is logged once per process.
+ */
+void rexglue_branch_unresolved(PPCContext& ctx, uint32_t from, uint32_t to);
 }  // namespace rex::runtime
 
 //=============================================================================

@@ -69,6 +69,15 @@ cr_as_local = true
 
 [functions]
 
+# mw4droid: fragmentos discontinuos (destinos de ramas condicionales que el
+# descubrimiento no alcanza en esta edicion; el padre es la funcion que
+# contiene el sitio de la rama). El discovery los recorre y las ramas
+# se resuelven como goto locales.
+"0x825D23CC" = { parent = 0x825D2340 }
+"0x82448E74" = { parent = 0x82448D18 }
+"0x8269D3D4" = { parent = 0x8269D3B8 }
+"0x828BA1AC" = { parent = 0x828BA188 }
+
 # Dos tail calls (b, salto incondicional) apuntan aqui desde 0x8286931C y
 # 0x82866664, pero el descubrimiento automatico nunca creo una funcion en esta
 # direccion. Resultado: la fase Validate falla con

@@ -43,7 +43,13 @@ struct FPSCRPlatform {
 
   static inline u32 getcsr() noexcept { return simde_mm_getcsr(); }
 
-  static inline void setcsr(u32 csr) noexcept { simde_mm_setcsr(csr); }
+  static inline void setcsr(u32 csr) noexcept {
+    // mw4droid: el huesped escribe bits de trampa FPSCR, pero el Xenon no
+    // atrapa por resultados FP (inexacto, etc.): nunca se espejan las trampas
+    // al MXCSR del anfitrion, o cada resultado inexacto mata el proceso.
+    csr |= ExceptionMask;
+    simde_mm_setcsr(csr);
+  }
 
   static inline void InitHostExceptions(u32& csr) noexcept {
     csr |= ExceptionMask;  // Set mask bits to disable exceptions
@@ -75,7 +81,12 @@ struct FPSCRPlatform {
     return csr;
   }
 
-  static inline void setcsr(u32 csr) noexcept { __asm__ __volatile__("msr fpcr, %0" : : "r"(csr)); }
+  static inline void setcsr(u32 csr) noexcept {
+    // mw4droid: igual que en x86_64 - el Xenon no atrapa por resultados FP;
+    // limpiar los bits de habilitacion de trampas antes de escribir el FPCR.
+    csr &= ~ExceptionMask;
+    __asm__ __volatile__("msr fpcr, %0" : : "r"(csr));
+  }
 
   static inline void InitHostExceptions(u32& csr) noexcept {
     csr &= ~ExceptionMask;  // Clear enable bits to disable exceptions

@@ -11,6 +11,8 @@
 
 #include <algorithm>
 #include <cstring>
+#include <cstdlib>
+#include <cstring>
 #include <utility>
 
 #include <rex/assert.h>
@@ -26,6 +28,16 @@ using namespace rex::arch;
 namespace rex::runtime {
 
 MMIOHandler* MMIOHandler::global_handler_ = nullptr;
+
+// D2: mismo interruptor que en xmemory.cpp (REXGLUE_AVDUMP=1, cacheado);
+// por defecto el comportamiento no cambia.
+static bool AvDumpHabilitado() {
+  static const bool habilitado = [] {
+    const char* valor = std::getenv("REXGLUE_AVDUMP");
+    return valor && *valor && std::strcmp(valor, "0") != 0;
+  }();
+  return habilitado;
+}
 
 MMIOHandler* MMIOHandler::global_handler() {
   return global_handler_;
@@ -417,8 +429,32 @@ bool MMIOHandler::ExceptionCallback(arch::Exception* ex) {
     // The address is not found within any range, so either a write watch or an
     // actual access violation.
     if (access_violation_callback_) {
-      return access_violation_callback_(std::move(lock), access_violation_callback_context_,
-                                        fault_host_address, is_write);
+      bool manejado = access_violation_callback_(std::move(lock), access_violation_callback_context_,
+                                                 fault_host_address, is_write);
+      if (!manejado && AvDumpHabilitado()) {
+        // D2: aquí sí tenemos el arch::Exception con el contexto del host,
+        // así que volcamos el RIP del anfitrión (PC del código recompilado)
+        // y el puntero de pila del host, adyacente al bloque AVDUMP que
+        // imprime Memory::AccessViolationCallback (xmemory.cpp).
+        auto* thread_context = ex->thread_context();
+#if REX_ARCH_AMD64
+        REXLOG_ERROR(
+            "AVDUMP host ctx: host RIP 0x{:016X} (código recompilado), host RSP 0x{:016X}, "
+            "fallo host 0x{:016X}",
+            thread_context->rip, thread_context->rsp,
+            static_cast<uint64_t>(ex->fault_address()));
+#elif REX_ARCH_ARM64
+        REXLOG_ERROR(
+            "AVDUMP host ctx: host PC 0x{:016X} (código recompilado), host SP 0x{:016X}, "
+            "fallo host 0x{:016X}",
+            thread_context->pc, thread_context->sp,
+            static_cast<uint64_t>(ex->fault_address()));
+#else
+        REXLOG_ERROR("AVDUMP host ctx: fallo host 0x{:016X} (RIP no disponible en esta arquitectura)",
+                     static_cast<uint64_t>(ex->fault_address()));
+#endif
+      }
+      return manejado;
     }
     return false;
   }

@@ -22,6 +22,11 @@
 #include <system_error>
 #include <thread>
 #include <vector>
+#ifdef __ANDROID__
+#include <sys/system_properties.h>
+#include <android/log.h>
+#include <atomic>
+#endif
 
 #include <rex/audio/xma/context.h>
 #include <rex/audio/xma/decoder.h>
@@ -89,7 +94,12 @@ std::chrono::steady_clock::time_point volcado_xma_inicio;
 // the context lock on the game's audio thread.
 void EscribirVolcadoXmaEnHilo(uint32_t contexto, int tipo, const VolcadoXma& v) {
   const std::string numero = std::to_string(contexto);
-  const auto ruta = rex::filesystem::GetExecutableFolder() /
+#ifdef __ANDROID__
+  const std::filesystem::path carpeta = "/storage/emulated/0/Android/data/io.github.nfsmwrecomp/files";
+#else
+  const auto carpeta = rex::filesystem::GetExecutableFolder();
+#endif
+  const auto ruta = carpeta /
                     ("xma_" + std::string(numero.size() < 3 ? 3 - numero.size() : 0, '0') + numero + "_" +
                      std::to_string(v.secuencia) + (tipo ? "_salida_" : "_tramas_") +
                      std::to_string(v.frecuencia) + ".wav");
@@ -180,7 +190,20 @@ void EscribirVolcadoXma(uint32_t contexto, int tipo, VolcadoXma& v) {
 
 void VolcarXma(uint32_t contexto, int tipo, uint32_t frecuencia, uint32_t canales, const uint8_t* be,
                size_t bytes) {
-  const int32_t segundos = REXCVAR_GET(audio_volcado_xma_s);
+  int32_t segundos = REXCVAR_GET(audio_volcado_xma_s);
+#ifdef __ANDROID__
+  // ponytail: debug.nfsmw.audio=2 enciende el volcado XMA (6 s por contexto) sin tocar el lanzador.
+  if (segundos <= 0) {
+    char prop[PROP_VALUE_MAX] = {};
+    if (__system_property_get("debug.nfsmw.audio", prop) > 0 && prop[0] == '2') {
+      segundos = 2;
+      static std::atomic<int> vistos{0};
+      if (vistos++ < 40 && tipo == 0) {
+        __android_log_print(ANDROID_LOG_INFO, "NFSMW-xma", "frame ctx=%u %uHz ch=%u", contexto, frecuencia, canales);
+      }
+    }
+  }
+#endif
   if (segundos <= 0 || !frecuencia || !canales) {
     return;
   }
@@ -248,7 +271,7 @@ void VolcarXma(uint32_t contexto, int tipo, uint32_t frecuencia, uint32_t canale
 
 // Another sound in the context: what was accumulated is no longer continuous with what follows.
 void ReiniciarVolcadoXma(uint32_t contexto) {
-  if (REXCVAR_GET(audio_volcado_xma_s) <= 0) {
+  if (volcados_xma.empty()) {
     return;
   }
   std::lock_guard<std::mutex> cerrojo(volcado_xma_mutex);
@@ -450,8 +473,13 @@ bool XmaContext::Work() {
     // The last packet can leave several decoded subframes. If this returns with
     // PCM pending, the consumer may wait for a full block without advancing the
     // read position or re-enabling this context.
-    if ((!data.IsAnyInputBufferValid() && !current_frame_remaining_subframes_) ||
-        data.error_status == 4) {
+    // PARCHE LOCAL - xma edge: no abandonar un fotograma a medio entregar.
+    // Consume() entrega como mucho subframe_decode_count bloques por vuelta,
+    // asi que la vuelta que agota la entrada deja el resto sin entregar; y
+    // nadie lo entregara luego, porque Work() ya apago is_enabled_ y el juego
+    // esta esperando justo eso para dar el aviso que lo sacaria.
+    if ((!data.IsAnyInputBufferValid() || data.error_status == 4) &&
+        current_frame_remaining_subframes_ == 0) {
       motivo_silencio = data.error_status == 4 ? 4 : 2;
       break;
     }
@@ -707,25 +735,43 @@ memory::RingBuffer XmaContext::PrepareOutputRingBuffer(XMA_CONTEXT_DATA* data) {
 
 kPacketInfo XmaContext::GetPacketInfo(uint8_t* packet, uint32_t frame_offset) {
   kPacketInfo packet_info = {};
+  packet_info.current_frame_offset_ = frame_offset;
 
   const uint32_t first_frame_offset = xma::GetPacketFrameOffset(packet);
   BitStream stream(packet, kBitsPerPacket);
   stream.SetOffset(first_frame_offset);
 
+  // PARCHE LOCAL - xma edge: ademas de la trama que empieza justo en el offset
+  // pedido, apuntar la primera que empieza en ese offset o despues, para poder
+  // enderezar un loop_start torcido (tools/parche_xma_edge.py).
+  bool resuelto = false;
+  auto mirar_trama = [&](uint32_t offset, uint32_t size) {
+    if (!resuelto && offset >= frame_offset) {
+      resuelto = true;
+      packet_info.current_frame_offset_ = offset;
+    }
+    if (offset != frame_offset) {
+      return;
+    }
+    packet_info.current_frame_ = packet_info.frame_count_;
+    packet_info.current_frame_size_ = size;
+  };
+
   if (frame_offset < first_frame_offset) {
     packet_info.current_frame_ = 0;
     packet_info.current_frame_size_ = first_frame_offset - frame_offset;
+    resuelto = true;
   }
 
   while (true) {
     if (stream.BitsRemaining() < kBitsPerFrameHeader) {
       // A header that starts here may continue in the next packet. Counting it
       // avoids marking the previous frame as the last one and skipping this one.
-      // Decode will join both fragments to get its full size.
+      // Decode will join both fragments to get its full size. PARCHE LOCAL -
+      // xma edge: contarla tambien en el offset resuelto, con tamano 0 (asi va
+      // al camino de cabecera partida).
       if (stream.BitsRemaining()) {
-        if (stream.offset_bits() == frame_offset) {
-          packet_info.current_frame_ = packet_info.frame_count_;
-        }
+        mirar_trama(static_cast<uint32_t>(stream.offset_bits()), 0);
         packet_info.frame_count_++;
       }
       break;
@@ -736,10 +782,8 @@ kPacketInfo XmaContext::GetPacketInfo(uint8_t* packet, uint32_t frame_offset) {
       break;
     }
 
-    if (stream.offset_bits() == frame_offset) {
-      packet_info.current_frame_ = packet_info.frame_count_;
-      packet_info.current_frame_size_ = static_cast<uint32_t>(frame_size);
-    }
+    mirar_trama(static_cast<uint32_t>(stream.offset_bits()),
+                static_cast<uint32_t>(frame_size));
 
     packet_info.frame_count_++;
 
@@ -977,6 +1021,19 @@ void XmaContext::Decode(XMA_CONTEXT_DATA* data) {
   }
 
   kPacketInfo packet_info = GetPacketInfo(packet, relative_offset);
+
+  // PARCHE LOCAL - xma edge: los juegos pueden escribir loop_start un bit antes
+  // del principio de la trama; con ese offset torcido el tamano sale de basura
+  // y ffmpeg deja la voz muda o truena (tools/parche_xma_edge.py).
+  if (loop_start_skip_pending_ && packet_info.current_frame_offset_ != relative_offset) {
+    // PARCHE LOCAL - xma edge: aviso en WARN para verlo en logcat del telefono.
+    REXAPU_WARN("XmaContext {}: loop_start {} no cae en una trama del paquete {}; se pasa a {}",
+                id(), relative_offset, packet_index, packet_info.current_frame_offset_);
+    relative_offset = packet_info.current_frame_offset_;
+    data->input_buffer_read_offset = (packet_index * kBitsPerPacket) + relative_offset;
+    packet_info = GetPacketInfo(packet, relative_offset);
+  }
+
   const uint32_t packet_to_skip = skip_count + 1;
   const uint32_t next_packet_index = packet_index + packet_to_skip;
 

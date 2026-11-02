@@ -47,6 +47,11 @@ extern "C" void NfsmwVigilarSegundoPlano();
 void NfsmwAndroidAudio(rex::RuntimeConfig& config) __attribute__((weak));
 #endif
 
+#if REX_PLATFORM_ANDROID
+// PARCHE LOCAL (NFSMW Recompiled): la define la app de Android, si quiere.
+void NfsmwAndroidAudio(rex::RuntimeConfig& config) __attribute__((weak));
+#endif
+
 class NfsmwApp : public rex::ReXApp {
  public:
   using rex::ReXApp::ReXApp;
@@ -69,6 +74,13 @@ class NfsmwApp : public rex::ReXApp {
     if (nfsmw::nativo::Activo()) {
       config.graphics = nfsmw::nativo::CrearSistemaGrafico();
     }
+#if REX_PLATFORM_ANDROID
+    // PARCHE LOCAL (NFSMW Recompiled) - la app de Android puede poner su propia
+    // salida de audio (AAudio) en vez de la de SDL. Ver nativo_android.cpp.
+    if (NfsmwAndroidAudio) {
+      NfsmwAndroidAudio(config);
+    }
+#endif
 #if REX_PLATFORM_ANDROID || REX_PLATFORM_IOS
     // PARCHE LOCAL (NFSMW Recompiled) - la app de Android puede poner su propia
     // salida de audio (AAudio) en vez de la de SDL. Ver nativo_android.cpp. La de

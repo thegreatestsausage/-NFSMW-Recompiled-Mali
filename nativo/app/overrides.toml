@@ -60,6 +60,124 @@ ctr_as_local = true
 
 [functions]
 
+# mw4droid: fragmentos discontinuos del padre (codigo en el hueco tras
+# 0x826E05BC salta hacia atras; sin ellos la funcion no cierra).
+"0x826E059C" = { parent = 0x826E0320 }
+"0x826E05A8" = { parent = 0x826E0320 }
+
+# mw4droid: huecos de la sondeo estatica — destinos de ramas sin resolver del
+# codegen en las ediciones sin PAL Espana (carves de identidad).
+"826369BC" = { }
+
+# mw4droid: destinos de llamada indirecta con identidad verificada por el
+# propio juego (las tablas de punteros resuelven estas direcciones) y sin
+# ramas sin resolver en el codegen.
+"8244ED58" = { }
+"82452690" = { }
+"82452730" = { }
+"82454B50" = { }
+
+# mw4droid: destinos de llamada indirecta que el descubrimiento no ve en esta
+# edicion; la propia llamada de la juego confirma la direccion (las tablas de
+# punteros de .data las escribio el compilador de esta edicion). Los cuerpos
+# salen del xex de esta edicion.
+"82366FB0" = { }
+"82367128" = { }
+"823671C0" = { }
+"823C8378" = { }
+"823C83F8" = { }
+"8243E7D8" = { }
+"8243FF30" = { }
+"82440420" = { }
+"824455B8" = { }
+"82445660" = { }
+"82449360" = { }
+"82449988" = { }
+"8244EDF8" = { }
+"8244F2E0" = { }
+"824511E8" = { }
+"824538D0" = { }
+"82453D60" = { }
+"82453E20" = { }
+"824553A0" = { }
+"82456198" = { }
+"824BA290" = { }
+"824C2720" = { }
+"824C2850" = { }
+"824F9D78" = { }
+"82546E18" = { }
+"82547130" = { }
+"8258A0A0" = { }
+"8258A648" = { }
+"8258D968" = { }
+"8258DA60" = { }
+"8258DB18" = { }
+"8258DE80" = { }
+"8258E138" = { }
+"82592538" = { }
+"825932D8" = { }
+"82593588" = { }
+"82593940" = { }
+"82593A10" = { }
+"82594C70" = { }
+"82595170" = { }
+"825953D8" = { }
+"82595570" = { }
+"825956D0" = { }
+"82597DA0" = { }
+"82598868" = { }
+"825989D8" = { }
+"82598FC8" = { }
+"825992F0" = { }
+"82599680" = { }
+"8259A450" = { }
+"8259A500" = { }
+"8259B9B8" = { }
+"8259BDC0" = { }
+"8259C150" = { }
+"8259C3D0" = { }
+"825A40C0" = { }
+"825CF780" = { }
+"825CFCC8" = { }
+"825D07C8" = { }
+"825D24E0" = { }
+"825DA1E0" = { }
+"825DBD68" = { }
+"825DC0C0" = { }
+"825DE890" = { }
+"825E4160" = { }
+"825E4338" = { }
+"825E4358" = { }
+"825EB0E8" = { }
+"825ED350" = { }
+"825ED568" = { }
+"825F2F60" = { }
+"82602BE0" = { }
+"826031C0" = { }
+"826047B0" = { }
+"82612270" = { }
+"8262D988" = { }
+"8263D020" = { }
+"826DB4F8" = { }
+"8272FD30" = { }
+"82749C10" = { }
+"82829AD0" = { }
+"8284C6D0" = { }
+"8284C770" = { }
+"8284C810" = { }
+"8284C898" = { }
+"8284D030" = { }
+"82851F00" = { }
+"82851FB8" = { }
+
+# mw4droid (INTERINO hasta la sondeo): la app llama a la original en los
+# caminos de verificacion; el descubrimiento no la crea en esta edicion.
+"0x82448E80" = { }
+
+# mw4droid: el servidor de audio de la app la llama directo
+# (nfsmw_audio_servidor.cpp); el descubrimiento no la crea en esta edicion.
+"0x82851D98" = { }
+
 # Functions with a REX_HOOK_RAW hook that reads non-volatile registers of its caller. With
 # non_volatile_as_local those registers live in the caller's local variables; share_registers
 # makes the caller store them to ctx before the call and reload them afterwards. This is only

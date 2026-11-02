@@ -119,8 +119,10 @@ android {
         buildConfigField("boolean", "REGISTRO", ((findProperty("nfsmw.registro") as String?) == "true").toString())
 
         ndk {
-            // Solo ARM64: el codigo generado, las rutas NEON y adrenotools.
-            abiFilters += "arm64-v8a"
+            // Solo ARM64 por defecto: el codigo generado, las rutas NEON y
+            // adrenotools. mw4droid: -Pnfsmw.abi=x86_64 para el emulador (sin
+            // Berberis, con las senales del SDK vivas).
+            abiFilters += ((findProperty("nfsmw.abi") as String?) ?: "arm64-v8a")
         }
 
         externalNativeBuild {

@@ -199,6 +199,9 @@ struct kPacketInfo {
   uint8_t frame_count_ = 0;
   uint8_t current_frame_ = 0;
   uint32_t current_frame_size_ = 0;
+  // PARCHE LOCAL - xma edge: la primera trama que empieza en el offset pedido
+  // o despues (el loop_start del juego puede no caer en una trama).
+  uint32_t current_frame_offset_ = 0;
 
   bool isLastFrameInPacket() const {
     return frame_count_ == 0 || current_frame_ == frame_count_ - 1;

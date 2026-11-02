@@ -48,9 +48,24 @@ bool build_b(BuilderContext& ctx) {
       // Unknown target - fall back to range check
       if (target >= ctx.fn.base() && target < ctx.fn.end()) {
         ctx.println("\tgoto loc_{:X};", target);
-      } else {
+      } else if (target == ctx.config().longJmpAddress || target == ctx.config().setJmpAddress ||
+                 ctx.findCallTarget(ctx.base)) {
+        // Resolvable through a pre-resolved tail-call edge or a setjmp/longjmp
+        // address - the regular call path handles those.
         REXCODEGEN_WARN("Unresolved b target 0x{:08X} from 0x{:08X}", target, ctx.base);
         ctx.emit_function_call(target);
+        ctx.println("\treturn;");
+      } else {
+        // Runtime fallback instead of emit_function_call's fatal: the helper
+        // tail-calls the target when it is registered in the dispatcher,
+        // otherwise execution continues past the branch site (a `b` is
+        // unconditional, so the helper call itself must always execute).
+        REXCODEGEN_WARN(
+            "Unresolved b target 0x{:08X} from 0x{:08X}; emitting runtime "
+            "branch helper",
+            target, ctx.base);
+        ctx.println("\trex::runtime::rexglue_branch_unresolved(ctx, 0x{:08X}u, 0x{:08X}u);",
+                    ctx.base, target);
         ctx.println("\treturn;");
       }
       break;

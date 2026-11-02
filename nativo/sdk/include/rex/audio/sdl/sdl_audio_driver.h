@@ -19,6 +19,7 @@
 #include <vector>
 
 #include <rex/audio/audio_driver.h>
+#include <rex/audio/output_limiter.h>
 #include <rex/thread.h>
 
 #include <SDL3/SDL.h>
@@ -56,8 +57,9 @@ class SDLAudioDriver : public AudioDriver {
   // delivered to SDL. Only SDL's audio thread uses them.
   std::vector<float> rafaga_ = {};
   size_t rafaga_leido_ = 0;
-  // Android: persistent output limiter gain. Only the device callback uses it.
-  float limitador_ganancia_ = 1.0f;
+  // Android: output limiter with lookahead (rex/audio/output_limiter.h). Only the
+  // device callback uses it.
+  rex::audio::Limitador limitador_;
   // Requests frames at 5.333 ms intervals up to audio_sdl_bomba_cola (Android default: 12).
   // With the pump active SDL does not release the semaphore when consuming.
   void Bomba();

@@ -2,24 +2,32 @@ package io.github.nfsmwrecomp;
 
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
+import android.content.SharedPreferences;
 import android.content.pm.ActivityInfo;
 import android.graphics.Color;
 import android.graphics.Point;
 import android.graphics.Rect;
 import android.graphics.Typeface;
 import android.net.Uri;
+import android.os.BatteryManager;
 import android.os.Build;
 import android.os.Bundle;
+import android.system.Os;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.ParcelFileDescriptor;
+import android.os.PowerManager;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
 import android.os.VibratorManager;
 import android.util.Log;
 import android.util.TypedValue;
+import android.view.Display;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
+import android.view.Surface;
+import android.view.SurfaceHolder;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
@@ -84,6 +92,32 @@ public class GameActivity extends SDLActivity {
     protected void onCreate(Bundle savedInstanceState) {
         Intent intent = getIntent();
         ArrayList<String> lista = new ArrayList<>();
+        // mw4droid: modo sondeo (setprop debug.nfsmw.survey 1): el dispatcher
+        // registra los destinos indirectos sin funcion en vez de abortar. Va
+        // aqui, ANTES de que super.onCreate cargue las librerias.
+        if (propiedad("debug.nfsmw.survey", null) != null) {
+            try {
+                Os.setenv("REXGLUE_SURVEY", "1", true);
+                Os.setenv("REXGLUE_AVDUMP", "1", true);
+            } catch (Exception e) {
+                Log.w(TAG, "sin sondeo: " + e);
+            }
+        }
+        // mw4droid: estadisticas de audio (setprop debug.nfsmw.audio 1): el
+        // driver de sonido registra cada 5 s, en el log, el pico y el recorte
+        // del audio plegado ANTES del limitador. Tambien vale el cvar
+        // audio_estadisticas. Va aqui, ANTES de que super.onCreate cargue las
+        // librerias, como el sondeo. En vivo las propiedades no puestas leen
+        // como cadena vacia, no null; el 0 apaga, como en power/thermal.
+        String audioStats = propiedad("debug.nfsmw.audio", null);
+        if (audioStats != null && !audioStats.isEmpty() && !audioStats.equals("0")) {
+            try {
+                Os.setenv("REXGLUE_AUDIOSTATS", "1", true);
+                Os.setenv("REX_AUDIO_ESTADISTICAS", "1", true);
+            } catch (Exception e) {
+                Log.w(TAG, "sin estadisticas de audio: " + e);
+            }
+        }
         String[] recibidos = intent.getStringArrayExtra(EXTRA_ARGUMENTOS);
         if (recibidos != null) {
             lista.addAll(Arrays.asList(recibidos));
@@ -163,6 +197,285 @@ public class GameActivity extends SDLActivity {
                 || intent.getBooleanExtra(EXTRA_PANORAMICO, false));
         mLayout.addView(touchController, new ViewGroup.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        // mw4droid (Mali): medidas y modo de pantalla, sin tocar el resto. Por adb:
+        //   adb shell setprop debug.nfsmw.power 1     -> [power] mW cada segundo
+        //   adb shell setprop debug.nfsmw.refresh 60  -> modo de pantalla mas cercano a 60 Hz
+        //   adb shell setprop debug.nfsmw.thermal 1   -> [thermal] estado termico del sistema
+        // En vivo las propiedades no puestas leen como cadena vacia, no null.
+        String power = propiedad("debug.nfsmw.power", null);
+        if (power != null && !power.isEmpty() && !power.equals("0")) {
+            startPowerLog();
+        }
+        String termico = propiedad("debug.nfsmw.thermal", null);
+        if (termico != null && !termico.isEmpty() && !termico.equals("0")) {
+            startThermalLog();
+        }
+        String refresco = propiedad("debug.nfsmw.refresh", null);
+        if (refresco != null && !refresco.isEmpty()) {
+            pedirModoPantalla(refresco);
+        }
+
+        // mw4droid (Dimensity 9500): escalones termicos de degradacion. Por adb:
+        //   adb shell setprop debug.nfsmw.thermosteps 1
+        // moderate pide 40 fps y severe o mas, 30; none/light suelta el escalon
+        // tras 60 s limpios. nfsmw_limite_fps NO se cambia en vivo (el SDK lo
+        // declara kRequiresRestart y el hilo del vblank fija su ritmo al
+        // arrancar): el escalon se apunta en preferencias ("termico") y en el
+        // log, y manda en el SIGUIENTE arranque (Ajustes.limiteFps). Con el
+        // flag a cero no se mira nada: comportamiento de siempre.
+        String escalones = propiedad("debug.nfsmw.thermosteps", null);
+        if (escalones != null && !escalones.isEmpty() && !escalones.equals("0")) {
+            startEscalonesTermicos();
+        }
+    }
+
+    /** El estado termico del sistema y sus cambios: para correlacionar vatios y
+     * throttling en las sesiones largas. API 29+. */
+    private void startThermalLog() {
+        final PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+        if (Build.VERSION.SDK_INT < 29 || pm == null) {
+            return;
+        }
+        PowerManager.OnThermalStatusChangedListener oyente =
+                new PowerManager.OnThermalStatusChangedListener() {
+            @Override public void onThermalStatusChanged(int estado) {
+                Log.i(TAG, "[thermal] " + estado + " " + nombreTermico(estado));
+            }
+        };
+        try {
+            pm.addThermalStatusListener(getMainExecutor(), oyente);
+            Log.i(TAG, "[thermal] " + pm.getCurrentThermalStatus()
+                    + " " + nombreTermico(pm.getCurrentThermalStatus()));
+        } catch (RuntimeException e) {
+            Log.w(TAG, "sin oyente termico: " + e);
+        }
+    }
+
+    private static String nombreTermico(int estado) {
+        switch (estado) {
+            case 0: return "none";
+            case 1: return "light";
+            case 2: return "moderate";
+            case 3: return "severe";
+            case 4: return "critical";
+            case 5: return "emergency";
+            case 6: return "shutdown";
+            default: return "?";
+        }
+    }
+
+    // --- mw4droid (Dimensity 9500): escalones termicos (ver onCreate).
+
+    /** Las preferencias del escalon termico: fichero APARTE del de ajustes
+     * porque lo escribe este proceso (":juego") y lo lee la pantalla de inicio
+     * en el otro, al montar los argumentos de la siguiente partida. Un fichero
+     * que el otro proceso no tenga ya en memoria es lo unico que lee fresco de
+     * disco; commit y no apply, por lo mismo. */
+    private static final String PREFS_TERMICO = "termico";
+
+    /** Lo que ya ha pedido el escalonador: 0 nada, o 40/30. */
+    private volatile int escalonTermico;
+    /** La vuelta al limite del usuario, 60 s despues de que el estado despeje. */
+    private Runnable vueltaTermica;
+    /** El sondeo ya vio margen por encima de cero: getThermalHeadroom devuelve
+     * 0 en los moviles sin prevision termica, y ahi un cero no significa calor
+     * (no pedir escalon por un cero que no significa nada). */
+    private volatile boolean margenVisto;
+
+    /** Aparte de reloj: el onPause lo limpia entero, y la histeresis tiene que
+     * sobrevivir a una pausa. */
+    private final Handler relojTermico = new Handler(Looper.getMainLooper());
+
+    /** Los escalones termicos: oyente del estado del sistema (API 29+) y sondeo
+     * de getThermalHeadroom (API 31+) cada 5 s. Se decide siempre en el hilo
+     * principal (evaluarEscalon); el sondeo solo trae datos. */
+    private void startEscalonesTermicos() {
+        final PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+        if (pm == null) {
+            return;
+        }
+        if (Build.VERSION.SDK_INT < 29) {
+            return;  // sin addThermalStatusListener no hay escalones que seguir
+        }
+        final SharedPreferences p = getSharedPreferences(PREFS_TERMICO, Context.MODE_PRIVATE);
+
+        // Arranca despejado: suelta lo que dejara colgado una sesion anterior
+        // (el proceso muere al salir, con el escalon todavia puesto).
+        int inicial = pm.getCurrentThermalStatus();
+        if (inicial <= 1 && p.contains("thermo_limite_fps")) {
+            p.edit().remove("thermo_limite_fps").commit();
+            Log.i(TAG, "[thermo] arranca " + nombreTermico(inicial)
+                    + ": soltado el escalon de la sesion anterior");
+        }
+
+        // El margen de prevision (getThermalHeadroom, API 31+): cuanto hace
+        // falta para subir de temperatura en 60 s. En vivo se loguea para
+        // correlacionar vatios y throttling; un cero con soporte confirmado
+        // (margenVisto) cuenta como moderate antes de que el estado suba.
+        if (Build.VERSION.SDK_INT >= 31) {
+            Thread hilo = new Thread(new Runnable() { @Override public void run() {
+                while (true) {
+                    try {
+                        float margen = pm.getThermalHeadroom(60);
+                        if (margen > 0f) margenVisto = true;
+                        final boolean agotado = margenVisto && margen <= 0f;
+                        Log.i(TAG, "[thermo] margen a 60 s: " + margen
+                                + (agotado ? " (agotado)" : ""));
+                        if (agotado) {
+                            relojTermico.post(new Runnable() { @Override public void run() {
+                                evaluarEscalon(p, pm.getCurrentThermalStatus(), true);
+                            }});
+                        }
+                    } catch (RuntimeException e) {
+                        Log.w(TAG, "[thermo] getThermalHeadroom: " + e);
+                    }
+                    try {
+                        Thread.sleep(5000);
+                    } catch (InterruptedException e) {
+                        return;
+                    }
+                }
+            }}, "nfsmw-thermo");
+            hilo.setDaemon(true);
+            hilo.start();
+        }
+
+        PowerManager.OnThermalStatusChangedListener oyente =
+                new PowerManager.OnThermalStatusChangedListener() {
+            @Override public void onThermalStatusChanged(int estado) {
+                Log.i(TAG, "[thermo] estado " + estado + " " + nombreTermico(estado));
+                evaluarEscalon(p, estado, false);
+            }
+        };
+        try {
+            pm.addThermalStatusListener(getMainExecutor(), oyente);
+            evaluarEscalon(p, inicial, false);
+        } catch (RuntimeException e) {
+            Log.w(TAG, "sin oyente termico: " + e);
+        }
+    }
+
+    /** Decide el escalon para ese estado termico (y si el margen de prevision
+     * se ha agotado) y lo apunta en las preferencias y en el log. Las subidas
+     * valen al momento; la vuelta al limite del usuario espera 60 s de estado
+     * limpio (histeresis: que no vuelva a subir por el camino). El limite del
+     * usuario ("limite_fps") no se toca nunca: el escalon va en su clave
+     * ("thermo_limite_fps") y se borra al despejarse. NO cambia el cvar en
+     * vivo, no se puede: nfsmw_ajustes_graficos.cpp lo declara kRequiresRestart
+     * y BucleVblank (nfsmw_nativo_sistema.cpp) fija su ritmo al arrancar; lo
+     * aplica Ajustes.limiteFps() al montar los argumentos del siguiente
+     * arranque. Siempre desde el hilo principal. */
+    private void evaluarEscalon(SharedPreferences p, int estado, boolean margenAgotado) {
+        int objetivo;
+        String porQue;
+        if (estado >= 3) {  // severe, critical, emergency, shutdown
+            objetivo = 30;
+            porQue = nombreTermico(estado);
+        } else if (estado == 2 || margenAgotado) {  // moderate, o sin margen aun en light
+            objetivo = 40;
+            porQue = margenAgotado
+                    ? "margen agotado (" + nombreTermico(estado) + ")" : nombreTermico(estado);
+        } else {
+            objetivo = 0;
+            porQue = nombreTermico(estado);
+        }
+        if (objetivo == escalonTermico) {
+            return;  // lo mismo que ya esta pedido: sin ruido
+        }
+        if (objetivo > 0) {
+            if (vueltaTermica != null) {
+                relojTermico.removeCallbacks(vueltaTermica);
+                vueltaTermica = null;
+            }
+            escalonTermico = objetivo;
+            p.edit().putInt("thermo_limite_fps", objetivo).commit();
+            Log.i(TAG, "[thermo] " + porQue + ": pedir " + objetivo
+                    + " fps (valdra en el siguiente arranque; el cvar no se cambia en vivo)");
+        } else if (vueltaTermica == null) {
+            // Histeresis de 60 s: si en ese rato el estado no vuelve a subir, fuera.
+            vueltaTermica = new Runnable() { @Override public void run() {
+                vueltaTermica = null;
+                escalonTermico = 0;
+                getSharedPreferences(PREFS_TERMICO, Context.MODE_PRIVATE)
+                        .edit().remove("thermo_limite_fps").commit();
+                Log.i(TAG, "[thermo] despejado 60 s: limite del usuario en el siguiente arranque");
+            }};
+            relojTermico.postDelayed(vueltaTermica, 60000);
+            Log.i(TAG, "[thermo] " + porQue + ": soltando el escalon en 60 s");
+        }
+    }
+
+    /** Una propiedad del sistema por reflexion (android.os.SystemProperties): el
+     * canal de adb para pruebas sin recompilar. Null si no se puede leer. */
+    private static String propiedad(String clave, String porDefecto) {
+        try {
+            Class<?> sp = Class.forName("android.os.SystemProperties");
+            return (String) sp.getMethod("get", String.class, String.class)
+                    .invoke(null, clave, porDefecto);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    // [power] el consumo de bateria cada segundo: la unica medida de coste que el
+    // gobernador de la GPU no puede esconder (con tope de fps baja el reloj hasta
+    // que la GPU llena el fotograma). Trasplantado del NhlActivity del NHL4droid.
+    private void startPowerLog() {
+        final BatteryManager bm = (BatteryManager) getSystemService(BATTERY_SERVICE);
+        Thread hilo = new Thread(new Runnable() { @Override public void run() {
+            IntentFilter filtro = new IntentFilter(Intent.ACTION_BATTERY_CHANGED);
+            while (true) {
+                long ua = bm.getLongProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW);
+                Intent b = registerReceiver(null, filtro);
+                int mv = b != null ? b.getIntExtra(BatteryManager.EXTRA_VOLTAGE, 0) : 0;
+                Log.i(TAG, "[power] " + Math.abs(ua) * mv / 1000000 + " mW ("
+                        + ua + " uA, " + mv + " mV)");
+                try {
+                    Thread.sleep(1000);
+                } catch (InterruptedException e) {
+                    return;
+                }
+            }
+        }}, "nfsmw-power");
+        hilo.setDaemon(true);
+        hilo.start();
+    }
+
+    // El modo de pantalla mas cercano a los Hz pedidos, y un setFrameRate en la
+    // superficie: vivo ignora el preferredDisplayModeId de la ventana, pero el
+    // voto en la capa del juego si lo atiende. Menos Hz de scanout = menos vatios.
+    private void pedirModoPantalla(String hzTexto) {
+        float quiero;
+        try {
+            quiero = Float.parseFloat(hzTexto);
+        } catch (NumberFormatException e) {
+            Log.w(TAG, "debug.nfsmw.refresh mal: " + hzTexto);
+            return;
+        }
+        Display display = getWindowManager().getDefaultDisplay();
+        Display.Mode actual = display.getMode();
+        Display.Mode mejor = actual;
+        for (Display.Mode modo : display.getSupportedModes()) {
+            if (modo.getPhysicalWidth() == actual.getPhysicalWidth()
+                    && modo.getPhysicalHeight() == actual.getPhysicalHeight()
+                    && Math.abs(modo.getRefreshRate() - quiero)
+                        < Math.abs(mejor.getRefreshRate() - quiero)) {
+                mejor = modo;
+            }
+        }
+        WindowManager.LayoutParams atributos = getWindow().getAttributes();
+        atributos.preferredDisplayModeId = mejor.getModeId();
+        getWindow().setAttributes(atributos);
+        Log.i(TAG, "modo de pantalla " + mejor.getModeId() + " @ " + mejor.getRefreshRate() + " Hz");
+        final float ritmo = mejor.getRefreshRate();
+        if (mSurface != null) mSurface.getHolder().addCallback(new SurfaceHolder.Callback() {
+            @Override public void surfaceCreated(SurfaceHolder holder) {
+                holder.getSurface().setFrameRate(ritmo, Surface.FRAME_RATE_COMPATIBILITY_DEFAULT);
+            }
+            @Override public void surfaceChanged(SurfaceHolder holder, int format, int w, int h) {}
+            @Override public void surfaceDestroyed(SurfaceHolder holder) {}
+        });
     }
 
     /** Un boton de mando fisico esconde los controles tactiles. */

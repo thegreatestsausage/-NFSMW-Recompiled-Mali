@@ -175,3 +175,149 @@ extern "C" [[noreturn]] void rex_fiber_trampoline(void) {
 }
 
 #endif  // REX_PLATFORM_SWITCH || Android ARM64
+
+#if REX_PLATFORM_ANDROID && !defined(REX_ARCH_ARM64)
+// ============================================================================
+// mw4droid: x86_64 SysV fiber backend (emulador). El otro backend de este
+// fichero es AAPCS64; este es el equivalente System V AMD64.
+//
+// Callee-saved en SysV x86_64: rbx, rbp, r12-r15, rsp, xmm6-xmm15. Todo lo
+// demas el compilador ya lo guardo antes de llamar a rex_fiber_swap. El rip
+// de reanudacion se lee del tope de pila (la direccion de retorno del call).
+// ============================================================================
+
+#include <rex/thread/fiber.h>
+
+#include <cassert>
+#include <cstdint>
+#include <cstdlib>
+
+namespace {
+
+using Ctx = rex::thread::Fiber::Context;
+
+static_assert(offsetof(Ctx, rbx) == 0, "Context: rbx movido");
+static_assert(offsetof(Ctx, rbp) == 8, "Context: rbp movido");
+static_assert(offsetof(Ctx, r12) == 16, "Context: r12 movido");
+static_assert(offsetof(Ctx, r14) == 32, "Context: r14 movido");
+static_assert(offsetof(Ctx, rsp) == 48, "Context: rsp movido");
+static_assert(offsetof(Ctx, rip) == 56, "Context: rip movido");
+static_assert(offsetof(Ctx, xmm6) == 64, "Context: xmm6 movido");
+static_assert(offsetof(Ctx, xmm15) == 208, "Context: xmm15 movido");
+static_assert(sizeof(Ctx) == 224, "Context: tamano cambiado");
+
+}  // namespace
+
+extern "C" {
+void rex_fiber_swap(Ctx* from, Ctx* to);
+void rex_fiber_entry(void);
+}
+
+__asm__(
+    ".text\n"
+    ".balign 16\n"
+    ".global rex_fiber_swap\n"
+    ".type rex_fiber_swap, @function\n"
+    "rex_fiber_swap:\n"
+    "    mov %rbx, 0(%rdi)\n"
+    "    mov %rbp, 8(%rdi)\n"
+    "    mov %r12, 16(%rdi)\n"
+    "    mov %r13, 24(%rdi)\n"
+    "    mov %r14, 32(%rdi)\n"
+    "    mov %r15, 40(%rdi)\n"
+    "    mov %rsp, 48(%rdi)\n"
+    "    mov (%rsp), %rax\n"
+    "    mov %rax, 56(%rdi)\n"
+    "    movaps %xmm6, 64(%rdi)\n"
+    "    movaps %xmm7, 80(%rdi)\n"
+    "    movaps %xmm8, 96(%rdi)\n"
+    "    movaps %xmm9, 112(%rdi)\n"
+    "    movaps %xmm10, 128(%rdi)\n"
+    "    movaps %xmm11, 144(%rdi)\n"
+    "    movaps %xmm12, 160(%rdi)\n"
+    "    movaps %xmm13, 176(%rdi)\n"
+    "    movaps %xmm14, 192(%rdi)\n"
+    "    movaps %xmm15, 208(%rdi)\n"
+    "\n"
+    "    mov 0(%rsi), %rbx\n"
+    "    mov 8(%rsi), %rbp\n"
+    "    mov 16(%rsi), %r12\n"
+    "    mov 24(%rsi), %r13\n"
+    "    mov 32(%rsi), %r14\n"
+    "    mov 40(%rsi), %r15\n"
+    "    mov 48(%rsi), %rsp\n"
+    "    movaps 64(%rsi), %xmm6\n"
+    "    movaps 80(%rsi), %xmm7\n"
+    "    movaps 96(%rsi), %xmm8\n"
+    "    movaps 112(%rsi), %xmm9\n"
+    "    movaps 128(%rsi), %xmm10\n"
+    "    movaps 144(%rsi), %xmm11\n"
+    "    movaps 160(%rsi), %xmm12\n"
+    "    movaps 176(%rsi), %xmm13\n"
+    "    movaps 192(%rsi), %xmm14\n"
+    "    movaps 208(%rsi), %xmm15\n"
+    "    mov 56(%rsi), %rax\n"
+    "    jmp *%rax\n"
+    ".size rex_fiber_swap, .-rex_fiber_swap\n"
+    "\n"
+    ".balign 16\n"
+    ".global rex_fiber_entry\n"
+    ".type rex_fiber_entry, @function\n"
+    "rex_fiber_entry:\n"
+    "    xor %ebp, %ebp\n"
+    "    jmp rex_fiber_trampoline\n"
+    ".size rex_fiber_entry, .-rex_fiber_entry\n");
+
+namespace rex::thread {
+
+thread_local Fiber* Fiber::tls_current_ = nullptr;
+
+Fiber* Fiber::ConvertCurrentThread() {
+  auto* f = new Fiber();
+  f->is_thread_fiber_ = true;
+  tls_current_ = f;
+  return f;
+}
+
+Fiber* Fiber::Create(size_t stack_size, void (*entry)(void*), void* arg) {
+  auto* f = new Fiber();
+  f->entry_ = entry;
+  f->arg_ = arg;
+  f->stack_.resize(stack_size);
+
+  // SysV x86_64: sp alineado a 16 ANTES del call, o sea 8 MOD 16 en la entrada
+  // de la funcion (jmp *rax no empuja nada). Otros 16 bytes de colchon.
+  auto top = reinterpret_cast<uintptr_t>(f->stack_.data()) + f->stack_.size();
+  top &= ~uintptr_t(15);
+  top -= 8;
+
+  f->context_.rsp = top;
+  f->context_.rip = reinterpret_cast<uintptr_t>(&rex_fiber_entry);
+  return f;
+}
+
+void Fiber::SwitchTo(Fiber* target) {
+  Fiber* from = tls_current_;
+  tls_current_ = target;
+  rex_fiber_swap(&from->context_, &target->context_);
+}
+
+void Fiber::Destroy() {
+  if (is_thread_fiber_) {
+    tls_current_ = nullptr;
+  } else {
+    assert(this != tls_current_ && "Destroy sobre la fibra que esta corriendo");
+  }
+  delete this;
+}
+
+}  // namespace rex::thread
+
+extern "C" [[noreturn]] void rex_fiber_trampoline(void) {
+  rex::thread::Fiber* f = rex::thread::Fiber::Current();
+  f->entry_(f->arg_);
+  assert(false && "la funcion de entrada de una fibra ha vuelto");
+  std::abort();
+}
+
+#endif  // REX_PLATFORM_ANDROID (x86_64)

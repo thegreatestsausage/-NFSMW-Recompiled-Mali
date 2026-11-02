@@ -32,6 +32,10 @@
 //   reglas    "GPU Commands=6-7;Main XThread=6+7;*=0-5". Casan por el PRINCIPIO
 //             del nombre (el kernel lo corta a 15 caracteres: "GPU Commands
 //             (F"), gana la primera que case, y "*" es el resto.
+//
+// Aparte, con el cvar thread_priority (desactivado por defecto), la misma
+// pasada pone el nice por los mismos prefijos: "Main XThread" a -8, "GPU
+// Commands" y "GPU anillo" a -4, y todo lo demas a 0.
 
 #include "afinidad.h"
 
@@ -39,6 +43,7 @@
 #include <fcntl.h>
 #include <pthread.h>
 #include <sched.h>
+#include <sys/resource.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -61,6 +66,11 @@
 REXCVAR_DEFINE_STRING(thread_affinity, "", "System",
                       "Fijar hilos a nucleos: 'auto', o reglas 'Nombre=6-7;Otro=0+1;*=0-5'. "
                       "Vacio = no tocar");
+
+REXCVAR_DEFINE_BOOL(thread_priority, false, "System",
+                    "Prioridades nice por el mismo prefijo de nombre que la afinidad: "
+                    "'Main XThread' a -8, 'GPU Commands' y 'GPU anillo' a -4, el resto a 0. "
+                    "Desactivado por defecto");
 
 namespace nfsmw::afinidad {
 
@@ -221,17 +231,26 @@ std::vector<Regla> ReglasAuto() {
     }
   }
 
-  // Los dos escalones de arriba.
+  // Los dos escalones de arriba, por umbrales RELATIVOS al mejor nucleo. Los
+  // valores exactos de cpu_capacity cambian con cada SoC (los del Dimensity
+  // 9500, 1+3+4, no se conocen todavia) y algunos kernels dan valores que
+  // difieren un poco entre nucleos de un mismo cluster: la igualdad exacta
+  // repartiria ese cluster entre dos escalones. Un nucleo entra en el escalon
+  // si su valor llega al 95 % del maximo del escalon. El 5 % de margen separa
+  // de sobra escalones vecinos conocidos (el A710 del Dimensity 9000 llega al
+  // 93 % del X2 en frecuencia) y cubre esa variacion dentro de un cluster.
   long primero = -1;
   long segundo = -1;
   for (int c = 0; c < nucleos; ++c) {
     primero = std::max(primero, valor[c]);
   }
+  const long umbralPrime = primero - primero / 20;  // 95 % del mejor
   for (int c = 0; c < nucleos; ++c) {
-    if (valor[c] < primero) {
+    if (valor[c] >= 0 && valor[c] < umbralPrime) {
       segundo = std::max(segundo, valor[c]);
     }
   }
+  const long umbralMedios = segundo > 0 ? segundo - segundo / 20 : 0;  // 95 % del medio
   cpu_set_t prime;
   cpu_set_t medios;
   cpu_set_t resto;
@@ -246,11 +265,11 @@ std::vector<Regla> ReglasAuto() {
       continue;
     }
     valores += (valores.empty() ? "" : " ") + std::to_string(c) + ':' + std::to_string(valor[c]);
-    if (valor[c] == primero) {
+    if (valor[c] >= umbralPrime) {
       CPU_SET(c, &prime);
     } else {
       CPU_SET(c, &resto);
-      if (valor[c] == segundo) {
+      if (valor[c] >= umbralMedios) {
         CPU_SET(c, &medios);
       }
     }
@@ -292,11 +311,36 @@ std::vector<Regla> ReglasAuto() {
   return reglas;
 }
 
+// Prioridades nice de los hilos, con los mismos prefijos que las reglas de
+// afinidad. El hilo principal corre antes que nada; el de render (el
+// procesador de comandos de Xenos y el anillo del motor nativo) detras de el;
+// todo lo demas queda a 0, sin ventaja sobre ellos.
+struct Prioridad {
+  const char* prefijo;
+  int nice;
+};
+
+constexpr Prioridad kPrioridades[] = {
+    {"Main XThread", -8},
+    {"GPU Commands", -4},
+    {"GPU anillo", -4},
+};
+
+int PrioridadPara(const char* nombre) {
+  for (const Prioridad& p : kPrioridades) {
+    if (std::strncmp(nombre, p.prefijo, std::strlen(p.prefijo)) == 0) {
+      return p.nice;
+    }
+  }
+  return 0;  // el resto: hilo de fondo
+}
+
 }  // namespace
 
 class Vigilante {
  public:
-  explicit Vigilante(std::vector<Regla> reglas) : reglas_(std::move(reglas)) {
+  explicit Vigilante(std::vector<Regla> reglas, bool prioridades)
+      : reglas_(std::move(reglas)), prioridades_(prioridades) {
     hilo_ = std::thread([this]() { Bucle(); });
   }
 
@@ -334,6 +378,26 @@ class Vigilante {
     return nullptr;
   }
 
+  // El nice es por hilo (PRIO_PROCESS con un tid) y setpriority baja el nice
+  // (prioridad arriba) sin privilegios mientras quepa en el margen de
+  // RLIMIT_NICE, que Android da de sobra para -8.
+  void PonerNice(pid_t tid, const char* nombre) {
+    const int deseado = PrioridadPara(nombre);
+    errno = 0;
+    const int actual = getpriority(PRIO_PROCESS, tid);
+    // getpriority devuelve -1 tambien con nice -1, que es legitimo: solo
+    // cuenta el errno. Y no se repite si ya esta como se quiere.
+    if (errno != 0 || actual == deseado) {
+      return;
+    }
+    if (setpriority(PRIO_PROCESS, tid, deseado) != 0) {
+      if (fallidosNice_.insert(tid).second) {
+        REXLOG_WARN("[afinidad] nice {} para '{}' (tid {}): {}", deseado, nombre, tid,
+                    std::strerror(errno));
+      }
+    }
+  }
+
   void Pasada() {
     DIR* dir = opendir("/proc/self/task");
     if (!dir) {
@@ -351,6 +415,9 @@ class Vigilante {
         continue;  // el hilo acaba de terminar
       }
       const Regla* r = ReglaPara(nombre);
+      if (prioridades_) {
+        PonerNice(tid, nombre);
+      }
       if (!r) {
         continue;
       }
@@ -379,6 +446,7 @@ class Vigilante {
   }
 
   const std::vector<Regla> reglas_;
+  const bool prioridades_;
   std::thread hilo_;
   std::mutex m_;
   std::condition_variable cv_;
@@ -386,6 +454,7 @@ class Vigilante {
   // Solo para no repetir las lineas del log. Los toca unicamente el vigilante.
   std::set<std::string> anunciados_;
   std::set<pid_t> fallidos_;
+  std::set<pid_t> fallidosNice_;
 };
 
 void BorrarVigilante::operator()(Vigilante* v) const {
@@ -394,11 +463,19 @@ void BorrarVigilante::operator()(Vigilante* v) const {
 
 VigilantePtr Arrancar() {
   const std::string texto = Recortar(REXCVAR_GET(thread_affinity));
-  if (texto.empty()) {
+  const bool prioridades = REXCVAR_GET(thread_priority);
+  // Las prioridades valen solas: sin thread_affinity, el vigilante solo pone
+  // el nice y no toca mascaras.
+  if (texto.empty() && !prioridades) {
     return nullptr;
   }
-  std::vector<Regla> reglas = texto == "auto" ? ReglasAuto() : LeerReglas(texto);
-  if (reglas.empty()) {
+  std::vector<Regla> reglas;
+  if (texto == "auto") {
+    reglas = ReglasAuto();
+  } else if (!texto.empty()) {
+    reglas = LeerReglas(texto);
+  }
+  if (reglas.empty() && !prioridades) {
     return nullptr;
   }
   std::string resumen;
@@ -408,8 +485,11 @@ VigilantePtr Arrancar() {
     }
     resumen += r.texto;
   }
+  if (prioridades) {
+    REXLOG_INFO("[afinidad] nice: 'Main XThread' -8, 'GPU Commands'/'GPU anillo' -4, resto 0");
+  }
   REXLOG_INFO("[afinidad] '{}' -> {}", texto, resumen);
-  return VigilantePtr(new Vigilante(std::move(reglas)));
+  return VigilantePtr(new Vigilante(std::move(reglas), prioridades));
 }
 
 }  // namespace nfsmw::afinidad
