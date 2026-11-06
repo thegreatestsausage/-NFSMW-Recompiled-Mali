@@ -5474,8 +5474,14 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
       return;
     }
     volcado_mirado_ = ahora;
-    const std::filesystem::path raiz = rex::filesystem::GetExecutableFolder();
+    // PARCHE LOCAL (mw4droid): en Android el ejecutable no se puede escribir; el fichero 'volcar' y el
+    // volcado se buscan tambien en user_data_root (en el telefono lo escribe adb).
+    std::filesystem::path raiz = rex::filesystem::GetExecutableFolder();
     std::error_code ec;
+    if (const std::string usuario = rex::cvar::GetFlagByName("user_data_root");
+        !usuario.empty() && !std::filesystem::exists(raiz / "volcar", ec)) {
+      raiz = usuario;
+    }
     if (!std::filesystem::exists(raiz / "volcar", ec)) {
       return;
     }

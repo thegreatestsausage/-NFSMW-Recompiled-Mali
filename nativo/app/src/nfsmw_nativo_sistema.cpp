@@ -431,6 +431,12 @@ REXCVAR_DEFINE_STRING(nfsmw_nativo_diag_constantes_ps, "", "NFSMW",
 REXCVAR_DEFINE_INT32(nfsmw_nativo_diag_constantes_ms, 250, "NFSMW",
                      "Renderizador nativo (solo pruebas): intervalo minimo entre anotaciones de constantes por PS")
     .range(0, 60000);
+REXCVAR_DEFINE_BOOL(nfsmw_oclusion_fingida_escena, true, "NFSMW",
+                    "PARCHE LOCAL: sin consultas de GPU (Mali), escribir un conteo fingido de visibles en las "
+                    "consultas de los destinos de escena (luces de los coches: freno, nitro, policias); el sol "
+                    "sigue oculto. false = como el juego sin consultas (las luces quedan apagadas). Los cuadros "
+                    "negros vistos el 04.11 eran del banco sin nfsmw_movil.toml (3 tiras), no de las luces")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 REXCVAR_DEFINE_INT32(nfsmw_nativo_oclusion_alternar_s, 0, "NFSMW",
                      "Renderizador nativo (solo pruebas): con nfsmw_nativo_oclusion = 1 y N > 0, alterna cada N segundos "
                      "entre consultas medidas (tramos pares) y la cuenta fingida de 1000 (tramos impares), y anota cada "
@@ -1125,6 +1131,45 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
         std::memset(cuentas, 0, sizeof(*cuentas));
         que = "principio";
         ++oclusion_contadores_[0];
+      }
+    }
+    // PARCHE LOCAL (NFSMW Recompiled): sin consultas de GPU (Mali, o nfsmw_consultas_oclusion=off) el
+    // juego leia siempre 0 muestras y tenia apagadas las llamas de los coches (frenos, nitro, policias).
+    // Fingir visibles todas (modo 0) quema la imagen en Mali: las llamas grandes (el sol) sacan cuadros
+    // enormes que tapan la escena. Asi que la cuenta fingida se escribe solo en las consultas empezadas
+    // sobre un destino de escena (pitch de 640 o mas, las luces de los coches); el sol (destino 320) y
+    // las consultas sin destino conocido siguen en 0. La deteccion de la pareja es la del camino medido:
+    // fin en base, principio en base + 32 con la marca.
+    if (modo == 2 && REXCVAR_GET(nfsmw_oclusion_fingida_escena)) {
+      if (oclusion_base_ != 0 && direccion == oclusion_base_) {
+        oclusion_base_ = 0;
+        std::memset(cuentas, 0, sizeof(*cuentas));
+        escrita = oclusion_fingida_escena_ ? kMuestrasOclusion : 0;
+        cuentas->ZPass_A = escrita;
+        cuentas->Total_A = escrita;
+        que = "final fingida";
+        if (oclusion_fingida_escena_ && !oclusion_fingida_anotada_) {
+          oclusion_fingida_anotada_ = true;
+          REXLOG_INFO("[nativo] oclusion sin GPU: consultas de escena visibles (luces de coches), el sol sigue oculto");
+        }
+      } else if (direccion >= 32 && (marcas_antes || bases_oclusion_.count(direccion - 32))) {
+        if (oclusion_base_ != 0) {
+          auto* viejas = memory_->TranslatePhysical<Cuentas*>(oclusion_base_);
+          std::memset(viejas, 0, sizeof(*viejas));  // la anterior no llego a su fin: que GetData no se quede esperando
+          ++oclusion_contadores_[3];
+        }
+        const uint32_t base = direccion - 32;
+        if (bases_oclusion_.size() < 64) {
+          bases_oclusion_.insert(base);
+        }
+        oclusion_base_ = base;
+        // Escena = destino de escena del juego, como en EscalaOclusion(): pitch de 640 o mas (una tira,
+        // nfsmw_render_sin_mosaico, el caso normal en Android) o con MSAA (las tiras de 280 con MSAA 2 si
+        // el mosaico sigue). El sol se pregunta en su destino de 320 sin MSAA: sigue en 0.
+        const uint32_t info_destino = Registro(rex::graphics::XE_GPU_REG_RB_SURFACE_INFO);
+        oclusion_fingida_escena_ = (info_destino & 0x3FFF) >= 640 || ((info_destino >> 16) & 0x3) != 0;
+        std::memset(cuentas, 0, sizeof(*cuentas));
+        que = "principio fingida";
       }
     }
     if (!que) {
@@ -5040,6 +5085,9 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
   bool oclusion_prueba_iniciada_ = false;
   bool oclusion_prueba_fingida_ = false;
   Reloj::time_point oclusion_prueba_inicio_{};
+  // Parche local: consulta activa del camino fingido y si su destino es de escena (luces de coches).
+  bool oclusion_fingida_escena_ = false;
+  bool oclusion_fingida_anotada_ = false;
   // Started, finished with a measurement, finished without a measurement yet, started without their
   // end, written with the faked count outside a pair, sum of the written measurements and the
   // largest one written.

@@ -430,7 +430,7 @@ public class GameActivity extends SDLActivity {
                 Intent b = registerReceiver(null, filtro);
                 int mv = b != null ? b.getIntExtra(BatteryManager.EXTRA_VOLTAGE, 0) : 0;
                 Log.i(TAG, "[power] " + Math.abs(ua) * mv / 1000000 + " mW ("
-                        + ua + " uA, " + mv + " mV)");
+                        + ua + " uA, " + mv + " mV) fps " + nativeFps());
                 try {
                     Thread.sleep(1000);
                 } catch (InterruptedException e) {

@@ -1143,8 +1143,11 @@
 828F48B2	dir	.data	828F48B2	misma direccion	-
 82A2CE04	dir	.data	82A2CE04	misma direccion	-
 82A2D1AC	dir	.data	82A2D1AC	misma direccion	-
+82C84D38	dir	.data	82C84D38	misma direccion	-
 8208F7C0	dir	.rdata	8208F6F0	referencias	-
 820AFD18	dir	.rdata	820AFC58	referencias	-
 820AFD68	dir	.rdata	820AFCA8	referencias	-
 820AFF50	dir	.rdata	820AFE90	referencias	-
 820B069C	dir	.rdata	820B05DC	referencias	-
+8244ED58	dir	.text	8244EBF0	referencias	-
+82452690	dir	.text	82452528	referencias	-
