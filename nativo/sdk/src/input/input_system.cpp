@@ -398,7 +398,11 @@ std::unique_ptr<InputSystem> CreateDefaultInputSystem(bool tool_mode) {
   // NOP driver (primary in tool mode, fallback otherwise)
   uint8_t nop_index = tool_mode ? 0 : 1;
   input->AddDriver(std::make_unique<nop::NopInputDriver>(nullptr, nop_index));
-  input->SetDeviceAssignment(std::make_unique<SlotAssignment>());
+  // PARCHE LOCAL (mw4droid): NFSMW es de un jugador y solo el usuario 0 tiene la sesion
+  // iniciada (xam_user.cpp). Con SlotAssignment un mando que enumera segundo o tercero
+  // (tactil 0, Xbox 1, GameSir 2) es el usuario 1-2: "perfil no conectado", no se ven
+  // las partidas y guardar se cuelga. Todo dispositivo alimenta al usuario 0.
+  input->SetDeviceAssignment(std::make_unique<SharedAssignment>());
   return input;
 }
 

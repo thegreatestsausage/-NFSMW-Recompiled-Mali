@@ -1168,6 +1168,19 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
         // el mosaico sigue). El sol se pregunta en su destino de 320 sin MSAA: sigue en 0.
         const uint32_t info_destino = Registro(rex::graphics::XE_GPU_REG_RB_SURFACE_INFO);
         oclusion_fingida_escena_ = (info_destino & 0x3FFF) >= 640 || ((info_destino >> 16) & 0x3) != 0;
+        // Diagnostico: cuantas consultas por destino (pitch, MSAA) y que se les responde, cada 10 s.
+        ++oclusion_hist_[(info_destino & 0x3FFF) | (((info_destino >> 16) & 0x3) << 16) |
+                         (oclusion_fingida_escena_ ? 0x80000000u : 0u)];
+        if (const auto ahora = Reloj::now(); ahora - oclusion_hist_t_ >= std::chrono::seconds(10)) {
+          std::string linea;
+          for (const auto& [clave, n] : oclusion_hist_) {
+            linea += fmt::format(" pitch {} MSAA {} -> {}: {};", clave & 0x3FFF, (clave >> 16) & 0x3,
+                                 (clave >> 31) ? 1000 : 0, n);
+          }
+          REXLOG_INFO("[nativo] oclusion sin GPU, consultas empezadas en 10 s por destino:{}", linea);
+          oclusion_hist_.clear();
+          oclusion_hist_t_ = ahora;
+        }
         std::memset(cuentas, 0, sizeof(*cuentas));
         que = "principio fingida";
       }
@@ -5088,6 +5101,8 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
   // Parche local: consulta activa del camino fingido y si su destino es de escena (luces de coches).
   bool oclusion_fingida_escena_ = false;
   bool oclusion_fingida_anotada_ = false;
+  std::unordered_map<uint32_t, uint32_t> oclusion_hist_;
+  Reloj::time_point oclusion_hist_t_{};
   // Started, finished with a measurement, finished without a measurement yet, started without their
   // end, written with the faked count outside a pair, sum of the written measurements and the
   // largest one written.
