@@ -1,4 +1,4 @@
-# NFSMW Recompiled
+# NFSMW Recompiled — Mali / USA fork
 
 A static native recompilation of **Need for Speed: Most Wanted (2005)**, Xbox 360,
 built on the [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk).
@@ -15,20 +15,79 @@ calls, the filesystem, audio, input, and a translation of the Xenos GPU to Direc
 `default.xex`, no generated C++, and no compiled binary — and it never will. See
 [Legal](#legal).
 
-## This fork
+## This fork: Mali, USA edition, native engine
 
-This is a fork of [madelrandel-blip/NFSMW-Recompiled](https://github.com/madelrandel-blip/NFSMW-Recompiled)
-that adds an **Android port** (arm64, Vulkan or OpenGL ES), an **iOS port** (iPhone, Vulkan
-over MoltenVK, built and signed from Windows without a Mac) and performance work on the
-Xenos GPU path. See [docs/android.md](docs/android.md), [ios/README.md](ios/README.md),
-[docs/pipeline-nativo.md](docs/pipeline-nativo.md) and the [CHANGELOG](CHANGELOG.md).
-Everything it changes in the ReXGlue SDK is in [sdk/](sdk/): one diff to read, generated
-from the patch scripts in `tools/`.
+This is a fork of [victorgbd/NFSMW-Recompiled-Mobile](https://github.com/victorgbd/NFSMW-Recompiled-Mobile)
+(itself a fork of [madelrandel-blip/NFSMW-Recompiled](https://github.com/madelrandel-blip/NFSMW-Recompiled))
+tuned for **Mali GPUs** with the **native engine** and the **USA edition** of the game. Branch
+`mali-usa-nativo`. Everything below this section is the upstream README, kept for reference.
 
-> **This is a vibe-coded project.** The Android and iOS ports and the changes in this fork were
-> written with an AI coding assistant (Claude Code), directed, tested on real hardware and
-> accepted by a human. The documentation records what was measured and what was not; trust
-> the numbers in it, not the confidence of any comment. Review the code before reusing it.
+Tested on one phone: **vivo V2515**, Dimensity 9500, **Mali-G1-Ultra MC12** (Vulkan 1.3,
+driver r54p0), Android 16. Other Mali phones, Adreno and the other editions are untested
+with these changes.
+
+### Results (vivo V2515, USA, native engine, 1280×720, race driven by the game's AI)
+
+| Frame cap | Battery power (median) | FPS median / 5th percentile | Thermal status |
+|---|---|---|---|
+| 30, 3 min | **3.99 W** (p90 4.58) | 30 / 28 | no change |
+| 30, 30 min | **3.54 W** (p90 4.19) | 30 / 27.9 | none to light |
+| 60, 3 min | 5.31 W (p90 6.27) | 60 / 58 | light |
+
+Power is read from the battery current (`setprop debug.nfsmw.power 1`; the `[power]` line in
+logcat also carries the FPS), with the phone off USB and adb over Wi-Fi. The 30-minute run
+had one drop to 12 FPS. These numbers were taken before the shadow pass fix below, which
+was not measured again.
+
+### What this fork changes
+
+- **USA edition without the PAL Spain disc.** Upstream builds every edition by translating
+  the PAL Spain executable, so it needs that disc. `tools/android/preparar_usa.py` builds the
+  native engine from the USA disc alone. Addresses it cannot match by content follow the
+  shift of the anchors in `tools/ediciones/usa/direcciones.tsv`, and it stops if a target is
+  not code. USA addresses fixed by hand: `.rdata` constants of the audio resampler and filter
+  (the "crushed" sound), the native draw paths that were switching themselves off, and two
+  `.text` calls of the draw glue path.
+- **Car lights and nitro on Mali.** They were faint or missing depending on the place on the
+  map. The shadow map pass opened with `loadOp = DONT_CARE`
+  (`nfsmw_nativo_pase_sombras_sin_load`), and a tile-based GPU loses content per tile.
+  Upstream had already turned it off on iOS for the same reason. Now it is off on Android too.
+- **Occlusion queries without GPU queries** (Mali): queries on scene targets read as visible,
+  the sun flare target stays hidden (`nfsmw_oclusion_fingida_escena`).
+- **Every controller is player one.** Only guest user 0 is signed in. A second or third pad
+  (touch is 0, then each Bluetooth or USB pad) played as user 1 or 2, so the game said the
+  profile was not signed in, did not show the saved career and hung saving a new alias.
+- **Audio:** a look-ahead limiter instead of a hard clamp, a stereo fold-down without
+  overload, a repeat guard for stalled guest audio, and the launcher no longer forces 100 %
+  gain. `setprop debug.nfsmw.audio 1` writes peak, clipping and underruns to logcat; `2`
+  dumps 20 s of the output.
+- **Measurements on the phone:** `debug.nfsmw.power`, `debug.nfsmw.thermal`, frame dumps on
+  Android (`--nfsmw_volcado=true` and an empty `volcar` file in `user_data_root`), and a
+  10-second log of occlusion queries per render target.
+- **Untested on the phone:** thermal steps 60 → 40 → 30 FPS from the system thermal status,
+  ADPF PerformanceHint (`nfsmw_adpf`, off by default) and thread affinity for the 1+3+4 core
+  layout. They are built in; the 30-minute run never left thermal status "light".
+
+### Building the USA APK
+
+You need your own USA disc or a folder with its files (`default.xex` with SHA-256
+`aebdf3c1…`, `NFS/`, `MOVIES/`). Check the edition first (see
+[Which disc do I have?](#which-disc-do-i-have)).
+
+```bat
+python tools\android\preparar_sdk.py
+python tools\android\preparar_usa.py --juego "D:\path\to\usa_game_folder"
+cd android
+gradlew assembleRelease -Pnfsmw.motor=nativo -Pnfsmw.edicion=usa -Pnfsmw.abi=arm64-v8a
+```
+
+`-Pnfsmw.abi=x86_64` builds for the Android emulator. On the phone, pick the USA ISO in the
+launcher; the game runs in English. As with every APK here, it contains the game's code:
+do not share it.
+
+Caveat: the generated `nativo/app_usa/` is not versioned. The last address fixes went into
+`direcciones.tsv` and were checked in a tree that was patched by hand; a clean regeneration
+from that table has not been run again.
 
 ---
 
@@ -479,6 +538,9 @@ Thanks to everyone whose work this stands on.
 
 **The original project**
 
+- [victorgbd/NFSMW-Recompiled-Mobile](https://github.com/victorgbd/NFSMW-Recompiled-Mobile) —
+  the Android and iOS fork this Mali fork is based on: the ports, the native engine as
+  maintained there, the launcher and most of the documentation below
 - [madelrandel-blip/NFSMW-Recompiled](https://github.com/madelrandel-blip/NFSMW-Recompiled) —
   the recompilation this fork is based on, by its authors and contributors, including the
   Linux ARM64 launcher and AppImage by MaSieS4Fun
